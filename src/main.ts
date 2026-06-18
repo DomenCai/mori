@@ -1,3 +1,15 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from "node:child_process";
+import {
+  openSync,
+  closeSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  unlinkSync,
+  mkdirSync,
+} from "node:fs";
+import { join } from "node:path";
 import { getDb, initDb, closeDb } from "./storage/db.js";
 import {
   loadLarkConfig,
@@ -5,6 +17,8 @@ import {
   loadLlmConfig,
   resolveModelRoute,
   sessionsDir,
+  logsDir,
+  pidPath,
   type LarkConfig,
 } from "./config.js";
 import { initChannel } from "./lark/channel.js";
@@ -14,21 +28,26 @@ import { handleCommand, type CommandContext } from "./lark/commands.js";
 import { HarnessManager, type HarnessEntry } from "./agent/harness.js";
 import { renderThinkingCard, renderMarkdownCard } from "./lark/cards.js";
 import { initSchedules } from "./schedule/cron.js";
+import { logger } from "./log.js";
 import type { DiaryService } from "./diary/service.js";
 import type { NormalizedMessage, LarkChannel } from "@larksuite/channel";
 
-async function main() {
+const bootLog = logger("boot");
+const larkLog = logger("lark");
+const diaryLog = logger("diary");
+
+async function runForeground() {
   // ── 1. 配置 & 数据库 ──
   let loaded = loadLarkConfig();
   if (!loaded) {
     loaded = await runRegistrationWizard();
     saveLarkConfig(loaded);
-    console.log(`[boot] 飞书配置已保存到 ~/.personal-agent/config.json`);
+    bootLog.info("飞书配置已保存到 ~/.personal-agent/config.json");
   }
   const larkConfig: LarkConfig = loaded;
   const llmConfig = loadLlmConfig();
 
-  console.log("[boot] 配置加载完成");
+  bootLog.info("配置加载完成");
 
   const companionRoute = {
     name: "companion" as const,
@@ -38,13 +57,13 @@ async function main() {
     name: "weekly" as const,
     ...resolveModelRoute("weekly", llmConfig),
   };
-  console.log(
-    `[boot] 模型路由: companion → ${companionRoute.model.id}, weekly → ${weeklyRoute.model.id}`,
+  bootLog.info(
+    `模型路由: companion → ${companionRoute.model.id}, weekly → ${weeklyRoute.model.id}`,
   );
 
   const db = getDb();
   initDb(db);
-  console.log("[boot] SQLite 初始化完成");
+  bootLog.info("SQLite 初始化完成");
 
   // ── 2. 飞书 ──
   const channel = initChannel(larkConfig);
@@ -71,19 +90,26 @@ async function main() {
   // ── 4. 消息处理 ──
   channel.on({
     message: async (msg: NormalizedMessage) => {
+      larkLog.info(
+        `收到消息 from=${msg.senderId} type=${msg.chatType} chat=${msg.chatId} len=${msg.content.length}`,
+      );
       // owner 绑定：扫码已知则直接校验；未知则首个私聊发消息的人成为 owner。
       if (!cmdCtx.ownerOpenId) {
         if (msg.chatType !== "p2p") return;
         cmdCtx.ownerOpenId = msg.senderId;
         saveLarkConfig({ ...larkConfig, ownerOpenId: msg.senderId });
-        console.log(`[boot] owner 已绑定: ${msg.senderId}`);
+        bootLog.info(`owner 已绑定: ${msg.senderId}`);
       } else if (msg.senderId !== cmdCtx.ownerOpenId) {
+        larkLog.debug(`忽略非 owner 消息 from=${msg.senderId}`);
         return;
       }
 
       // 命令路由
       const { handled } = await handleCommand(msg, cmdCtx);
-      if (handled) return;
+      if (handled) {
+        larkLog.info("命令已处理");
+        return;
+      }
 
       let resolvedType = registry.getType(msg.chatId);
       if (!resolvedType && msg.chatType === "p2p") {
@@ -106,13 +132,13 @@ async function main() {
       }
     },
     error: (err) => {
-      console.error("[lark] 错误:", err.message);
+      larkLog.error("错误:", err.message);
     },
     reconnecting: () => {
-      console.log("[lark] 正在重连…");
+      larkLog.warn("正在重连…");
     },
     reconnected: () => {
-      console.log("[lark] 已重连");
+      larkLog.info("已重连");
     },
   });
 
@@ -126,11 +152,11 @@ async function main() {
 
   // ── 7. 启动 ──
   await channel.connect();
-  console.log("[boot] 飞书 WebSocket 已连接，bot 启动完成 ✓");
+  bootLog.info("飞书 WebSocket 已连接，bot 启动完成 ✓");
 
   // 优雅退出
   const shutdown = () => {
-    console.log("[shutdown] 关闭中…");
+    bootLog.info("关闭中…");
     closeDb();
     process.exit(0);
   };
@@ -155,6 +181,7 @@ async function handleDiaryMessage(
     inputType: "text",
   });
   entry.currentDiaryEntryId = diaryEntryId;
+  diaryLog.info(`处理日记 chat=${msg.chatId} entryId=${diaryEntryId}`);
 
   // 2. 流式回复
   await channel.stream(
@@ -202,11 +229,13 @@ async function handleDiaryMessage(
 
           try {
             let promptError: unknown = null;
+            const started = Date.now();
             try {
               await entry.harness.prompt(msg.content);
+              diaryLog.info(`prompt 完成 耗时=${Date.now() - started}ms`);
             } catch (err) {
               promptError = err;
-              console.error("[diary] prompt 失败:", err);
+              diaryLog.error("prompt 失败:", err);
             }
 
             if (promptError) {
@@ -253,6 +282,8 @@ async function handleChatMessage(
 ): Promise<void> {
   const type = chatType === "diary" ? "diary" : "dm";
   const entry = await harnessManager.getOrCreate(msg.chatId, type);
+  larkLog.info(`处理对话 chat=${msg.chatId} type=${type}`);
+  const started = Date.now();
 
   await channel.stream(
     msg.chatId,
@@ -274,6 +305,9 @@ async function handleChatMessage(
 
           try {
             await entry.harness.prompt(msg.content);
+            larkLog.info(
+              `回复完成 chat=${msg.chatId} 耗时=${Date.now() - started}ms`,
+            );
             await ctrl.update(renderMarkdownCard(fullText || "（已处理）"));
           } finally {
             unsubscribe();
@@ -293,21 +327,21 @@ async function ensureDiaryEpisode(
 ): Promise<{ fallbackReason?: string }> {
   if (diaryService.hasEpisode(diaryEntryId)) return {};
 
-  console.warn(`[diary] episode 缺失，触发 followUp: diary_entry_id=${diaryEntryId}`);
+  diaryLog.warn(`episode 缺失，触发 followUp: diary_entry_id=${diaryEntryId}`);
   try {
     await entry.harness.followUp(
       "你还没有为这篇日记写 episode。请现在调用 write_episode 工具完成蒸馏。",
     );
     await entry.harness.waitForIdle();
   } catch (err) {
-    console.error("[diary] episode followUp 失败，使用兜底 episode:", err);
+    diaryLog.error("episode followUp 失败，使用兜底 episode:", err);
     diaryService.saveFallbackEpisode(diaryEntryId, content);
     return { fallbackReason: "episode followUp 失败，已保存最小兜底 episode" };
   }
 
   if (diaryService.hasEpisode(diaryEntryId)) return {};
 
-  console.warn(`[diary] followUp 后 episode 仍缺失，使用兜底: diary_entry_id=${diaryEntryId}`);
+  diaryLog.warn(`followUp 后 episode 仍缺失，使用兜底: diary_entry_id=${diaryEntryId}`);
   diaryService.saveFallbackEpisode(diaryEntryId, content);
   return { fallbackReason: "模型未写 episode，已保存最小兜底 episode" };
 }
@@ -320,7 +354,231 @@ function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-main().catch((err) => {
-  console.error("[fatal]", err);
-  process.exit(1);
-});
+// ── CLI ──────────────────────────────────────────────────────────────
+// start：后台 detached 子进程跑 `run`，stdio 重定向到 logs/agent.log。
+// pid 文件写入启动时间和脚本路径，stop/status 会先校验进程归属，避免 PID 复用误杀。
+
+interface PidRecord {
+  version: 1;
+  pid: number;
+  scriptPath: string;
+  startedAt: string;
+}
+
+interface LegacyPidRecord {
+  legacy: true;
+  pid: number;
+}
+
+type StoredPidRecord = PidRecord | LegacyPidRecord;
+
+type DaemonState =
+  | { kind: "none" }
+  | { kind: "running"; record: PidRecord }
+  | { kind: "stale"; record: StoredPidRecord | null }
+  | { kind: "unverified"; pid: number; reason: string };
+
+function isValidPid(pid: unknown): pid is number {
+  return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0;
+}
+
+function readPidRecord(): StoredPidRecord | null {
+  if (!existsSync(pidPath)) return null;
+  const raw = readFileSync(pidPath, "utf-8").trim();
+  const legacyPid = Number(raw);
+  if (/^\d+$/.test(raw) && isValidPid(legacyPid)) {
+    return { legacy: true, pid: legacyPid };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PidRecord>;
+    if (
+      parsed.version === 1 &&
+      isValidPid(parsed.pid) &&
+      typeof parsed.scriptPath === "string" &&
+      parsed.scriptPath.length > 0 &&
+      typeof parsed.startedAt === "string" &&
+      parsed.startedAt.length > 0
+    ) {
+      return {
+        version: 1,
+        pid: parsed.pid,
+        scriptPath: parsed.scriptPath,
+        startedAt: parsed.startedAt,
+      };
+    }
+  } catch {
+    // Malformed pid files are treated as stale runtime state.
+  }
+  return null;
+}
+
+function isAlive(pid: number): boolean {
+  if (!isValidPid(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readProcessField(pid: number, field: "args" | "lstart"): string | null {
+  const result = spawnSync("ps", ["-p", String(pid), "-o", `${field}=`], {
+    encoding: "utf-8",
+  });
+  if (result.status !== 0) return null;
+  const value = result.stdout.trim();
+  return value.length > 0 ? value : null;
+}
+
+function verifyManagedProcess(record: PidRecord): "owned" | "other" | "unknown" {
+  const startedAt = readProcessField(record.pid, "lstart");
+  const command = readProcessField(record.pid, "args");
+  if (!startedAt || !command) return "unknown";
+  if (
+    startedAt === record.startedAt &&
+    command.includes(record.scriptPath) &&
+    /(?:^|\s)run(?:\s|$)/.test(command)
+  ) {
+    return "owned";
+  }
+  return "other";
+}
+
+function readDaemonState(): DaemonState {
+  if (!existsSync(pidPath)) return { kind: "none" };
+
+  const record = readPidRecord();
+  if (!record) return { kind: "stale", record: null };
+  if (!isAlive(record.pid)) return { kind: "stale", record };
+  if ("legacy" in record) {
+    return {
+      kind: "unverified",
+      pid: record.pid,
+      reason: "pid 文件为旧格式，缺少进程归属校验信息",
+    };
+  }
+
+  const verdict = verifyManagedProcess(record);
+  if (verdict === "owned") return { kind: "running", record };
+  if (verdict === "other") return { kind: "stale", record };
+  return {
+    kind: "unverified",
+    pid: record.pid,
+    reason: "无法读取进程命令或启动时间，不能安全确认归属",
+  };
+}
+
+function removePidFile(): void {
+  if (existsSync(pidPath)) unlinkSync(pidPath);
+}
+
+function writePidRecord(pid: number): boolean {
+  const scriptPath = process.argv[1];
+  const startedAt = readProcessField(pid, "lstart");
+  if (!scriptPath || !startedAt) return false;
+
+  const record: PidRecord = {
+    version: 1,
+    pid,
+    scriptPath,
+    startedAt,
+  };
+  writeFileSync(pidPath, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
+  return true;
+}
+
+function startDaemon(): void {
+  const state = readDaemonState();
+  if (state.kind === "running") {
+    bootLog.error(`已在运行 (pid ${state.record.pid})`);
+    process.exit(1);
+  }
+  if (state.kind === "unverified") {
+    bootLog.error(`${state.reason}，请先手动检查 pid ${state.pid}`);
+    process.exit(1);
+  }
+  if (state.kind === "stale") removePidFile();
+
+  if (!loadLarkConfig()) {
+    bootLog.error(
+      "尚未完成飞书配置，请先前台运行 `personal-agent run` 扫码注册，再用 start。",
+    );
+    process.exit(1);
+  }
+
+  mkdirSync(logsDir, { recursive: true });
+  const logFile = join(logsDir, "agent.log");
+  const fd = openSync(logFile, "a");
+  const child = spawn(
+    process.execPath,
+    [process.argv[1], "run"],
+    {
+      detached: true,
+      stdio: ["ignore", fd, fd],
+    },
+  );
+  closeSync(fd);
+
+  if (!child.pid || !writePidRecord(child.pid)) {
+    child.kill("SIGTERM");
+    bootLog.error("启动失败：无法校验后台进程信息");
+    process.exit(1);
+  }
+  child.unref();
+  bootLog.info(`已启动 (pid ${child.pid})，日志: ${logFile}`);
+}
+
+function stopDaemon(): void {
+  const state = readDaemonState();
+  if (state.kind === "none" || state.kind === "stale") {
+    bootLog.info("未在运行");
+    if (state.kind === "stale") removePidFile();
+    return;
+  }
+  if (state.kind === "unverified") {
+    bootLog.error(`${state.reason}，拒绝自动停止 pid ${state.pid}`);
+    process.exit(1);
+  }
+
+  process.kill(state.record.pid, "SIGTERM");
+  removePidFile();
+  bootLog.info(`已停止 (pid ${state.record.pid})`);
+}
+
+function showStatus(): void {
+  const state = readDaemonState();
+  if (state.kind === "running") {
+    bootLog.info(`运行中 (pid ${state.record.pid})，日志: ${join(logsDir, "agent.log")}`);
+    return;
+  }
+  if (state.kind === "unverified") {
+    bootLog.warn(`${state.reason}，pid=${state.pid}`);
+    return;
+  }
+  if (state.kind === "stale") removePidFile();
+  bootLog.info("未运行");
+}
+
+const command = process.argv[2] ?? "run";
+switch (command) {
+  case "start":
+    startDaemon();
+    break;
+  case "stop":
+    stopDaemon();
+    break;
+  case "status":
+    showStatus();
+    break;
+  case "run":
+    runForeground().catch((err) => {
+      bootLog.error("启动失败:", err);
+      process.exit(1);
+    });
+    break;
+  default:
+    bootLog.error(`未知命令: ${command}（可用: start | stop | status | run）`);
+    process.exit(1);
+}

@@ -3,6 +3,9 @@ dist/
 data/config.json
 data/app.db*
 data/sessions/
+data/logs/
+data/agent.pid
+data/llm-providers.json
 .env
 *.log
 diary-data/

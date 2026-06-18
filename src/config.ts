@@ -11,6 +11,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
 import type { Model } from "@earendil-works/pi-ai";
+import { logger } from "./log.js";
+
+const log = logger("init");
 
 interface ProviderConfig {
   type: string;
@@ -90,7 +93,7 @@ export function resolveModelRoute(
 // 运行时状态（config.json / app.db / sessions）与用户可改文件（.env /
 // llm-providers.json / agent 提示词）都挂在 ROOT 下：
 //   正常运行 → ~/.personal-agent；调试（pnpm dev 设 PERSONAL_AGENT_DEV）→ 项目内 ./data。
-// 用户可改文件首次缺失时，从仓库内置默认拷贝过去；调试态直接用仓库原位文件。
+// 用户可改文件首次缺失时，从仓库内置默认拷贝过去。
 const isDev = !!process.env.PERSONAL_AGENT_DEV;
 const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".personal-agent");
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -98,15 +101,16 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_FILE = join(ROOT, "config.json");
 export const sessionsDir = join(ROOT, "sessions");
 export const dbPath = join(ROOT, "app.db");
+export const logsDir = join(ROOT, "logs");
+export const pidPath = join(ROOT, "agent.pid");
 
-/** 用户可改的单个文件：调试用仓库原位，生产放 ROOT 并在首次缺失时 seed。 */
+/** 用户可改的单个文件：调试用仓库原位，生产放 ROOT；缺失时从示例 seed。 */
 function userFile(name: string, devPath: string, seedFrom = devPath): string {
-  if (isDev) return devPath;
-  const target = join(ROOT, name);
+  const target = isDev ? devPath : join(ROOT, name);
   if (!existsSync(target)) {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
     copyFileSync(seedFrom, target);
-    console.log(`[init] 已生成 ${target}，可按需修改`);
+    log.info(`已生成 ${target}，可按需修改`);
   }
   return target;
 }
@@ -117,7 +121,7 @@ function userDir(name: string, devPath: string): string {
   const target = join(ROOT, name);
   if (!existsSync(target)) {
     cpSync(devPath, target, { recursive: true });
-    console.log(`[init] 已生成 ${target}，可按需修改`);
+    log.info(`已生成 ${target}，可按需修改`);
   }
   return target;
 }
@@ -125,6 +129,7 @@ function userDir(name: string, devPath: string): string {
 export const llmConfigPath = userFile(
   "llm-providers.json",
   join(REPO_ROOT, "data", "llm-providers.json"),
+  join(REPO_ROOT, "data", "llm-providers.example.json"),
 );
 export const agentDir = userDir("agent", join(REPO_ROOT, "agent"));
 

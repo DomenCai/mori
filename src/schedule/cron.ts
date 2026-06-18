@@ -5,6 +5,9 @@ import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { DiaryService } from "../diary/service.js";
 import { runConsolidation } from "../memory/consolidation.js";
+import { logger } from "../log.js";
+
+const log = logger("cron");
 
 export function initSchedules(
   db: Database.Database,
@@ -17,11 +20,11 @@ export function initSchedules(
   // 周日 23:55 —— 周度总结 + 合并
   jobs.push(
     new Cron("55 23 * * 0", { timezone: "Asia/Shanghai" }, async () => {
-      console.log("[cron] 触发周度合并");
+      log.info("触发周度合并");
       try {
         await runConsolidation(db, harnessManager, channel, registry);
       } catch (err) {
-        console.error("[cron] 周度合并失败:", err);
+        log.error("周度合并失败:", err);
       }
     }),
   );
@@ -29,16 +32,16 @@ export function initSchedules(
   // 每天 21:00 —— 检查是否需要提醒记日记
   jobs.push(
     new Cron("0 21 * * *", { timezone: "Asia/Shanghai" }, async () => {
-      console.log("[cron] 检查日记提醒");
+      log.info("检查日记提醒");
       try {
         await checkDiaryReminder(db, channel, registry);
       } catch (err) {
-        console.error("[cron] 日记提醒失败:", err);
+        log.error("日记提醒失败:", err);
       }
     }),
   );
 
-  console.log("[cron] 已注册 2 个定时任务（周总结 周日23:55 / 日记提醒 每天21:00）");
+  log.info("已注册 2 个定时任务（周总结 周日23:55 / 日记提醒 每天21:00）");
   return jobs;
 }
 

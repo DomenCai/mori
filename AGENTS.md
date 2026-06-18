@@ -1,0 +1,30 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+This is a Node.js 22+ TypeScript ESM service for a Feishu-first personal agent. Source code lives in `src/`: `main.ts` boots config, SQLite, Feishu channel, commands, agent harnesses, and schedules. Domain modules are split into `agent/` for pi-agent-core harnesses, prompts, schemas, and tools; `diary/`, `memory/`, `retrieval/`, and `storage/` for persistence and FTS; `lark/` for Feishu integration; and `schedule/` for cron jobs. Editable prompt and policy files live in top-level `agent/`. Product and implementation notes are in `docs/`. Runtime data under `data/`, generated output in `dist/`, and local diaries under `diary-data/` are not source artifacts.
+
+## Build, Test, and Development Commands
+
+- `pnpm install` installs dependencies; use pnpm because the lockfile and package manager are pinned.
+- `pnpm dev` runs `tsx watch src/main.ts` with `PERSONAL_AGENT_DEV=1`, so runtime state is read from local `data/`.
+- `pnpm build` runs `tsc`, type-checks the project, and writes `dist/`.
+- `pnpm start` runs the compiled daemon from `dist/main.js`; run `pnpm build` first.
+
+There is currently no dedicated test or lint script. Use `pnpm build` as the minimum verification before opening a PR.
+
+## Coding Style & Naming Conventions
+
+Use TypeScript with `strict` mode and ESM `NodeNext` imports. Include `.js` extensions in relative runtime imports, matching existing files such as `./storage/db.js`. Follow the current style: 2-space indentation, semicolons, double quotes, named exports, and clear service-style classes. Keep modules focused on one responsibility and avoid adding abstraction layers unless there are multiple real implementations.
+
+## Testing Guidelines
+
+No test framework is configured yet. For behavior changes, add targeted tests only after introducing a test runner and a `pnpm test` script. Prefer high-value coverage around memory updates, SQLite schema/queries, command routing, and Feishu message handling. Name test files after the unit under test, for example `memory/service.test.ts`.
+
+## Commit & Pull Request Guidelines
+
+The repository currently uses Conventional Commits, for example `feat: 初始化飞书个人 Agent`. Keep future commits in the same form: `feat: ...`, `fix: ...`, `docs: ...`, or `refactor: ...`. PRs should include a concise problem statement, the implementation summary, verification commands run, and screenshots or Feishu card examples when UI/card rendering changes.
+
+## Security & Configuration Tips
+
+Do not commit `.env`, `data/config.json`, `data/app.db*`, `data/sessions/`, logs, or `diary-data/`. LLM keys come from `.env` using names such as `ANTHROPIC_API_KEY`; Feishu credentials are created by the first-run registration wizard and stored in runtime config.

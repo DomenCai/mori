@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "description": "飞书优先的对话型个人 Agent，基于 pi-agent-core",
+  "bin": {
+    "personal-agent": "dist/main.js"
+  },
   "scripts": {
     "dev": "PERSONAL_AGENT_DEV=1 tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "build": "tsc"
+    "build": "tsc",
+    "prepare": "tsc"
   },
   "engines": {
     "node": ">=22.19.0"

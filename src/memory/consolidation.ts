@@ -4,6 +4,9 @@ import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { DiaryService } from "../diary/service.js";
 import { genId, nowISO, weekKey } from "../utils.js";
+import { logger } from "../log.js";
+
+const log = logger("consolidation");
 
 export async function runConsolidation(
   db: Database.Database,
@@ -19,7 +22,7 @@ export async function runConsolidation(
   const episodes = diaryService.getEpisodesSince(weekStart.toISOString());
 
   if (episodes.length === 0) {
-    console.log("[consolidation] 本周无 episode，跳过");
+    log.info("本周无 episode，跳过");
     return;
   }
 
