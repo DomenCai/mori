@@ -13,6 +13,9 @@ import { createWriteEpisodeTool } from "./tools/write-episode.js";
 import { createUpsertWorkingItemTool } from "./tools/upsert-working-item.js";
 import { createUpdateProfileTool } from "./tools/update-profile.js";
 import { createSearchDiaryTool } from "./tools/search-diary.js";
+import { shanghaiFileTimestamp } from "../utils.js";
+
+const SESSION_CWD = "personal-agent";
 
 export interface HarnessEntry {
   harness: AgentHarness;
@@ -57,6 +60,7 @@ export class HarnessManager {
       fs: this.env,
       sessionsRoot: opts.sessionsDir,
     });
+    this.installShanghaiSessionFileNames();
     this.diaryService = new DiaryService(opts.db);
     this.memoryService = new MemoryService(opts.db);
   }
@@ -88,16 +92,19 @@ export class HarnessManager {
     chatType: HarnessEntry["chatType"],
     opts: { runId?: string },
   ): Promise<HarnessEntry> {
-    const session = await this.repo.create({ cwd: process.cwd() });
+    const session = await this.repo.create({ cwd: SESSION_CWD });
 
-    const snapshot = buildMemorySnapshot(this.db);
-    const systemPrompt = buildSystemPrompt(snapshot);
     const route =
       chatType === "consolidation" ? this.routes.weekly : this.routes.companion;
 
     const isDiaryRound = chatType === "diary";
     const isConsolidation = chatType === "consolidation";
     const canEditProfile = isConsolidation;
+    const snapshot = buildMemorySnapshot(this.db);
+    const systemPrompt = appendSessionInstructions(
+      buildSystemPrompt(snapshot),
+      chatType,
+    );
 
     let entry: HarnessEntry;
 
@@ -155,6 +162,28 @@ export class HarnessManager {
     return entry;
   }
 
+  private installShanghaiSessionFileNames(): void {
+    const repo = this.repo as unknown as {
+      getSessionDir(cwd: string): Promise<string>;
+      createSessionFilePath(
+        cwd: string,
+        sessionId: string,
+        timestamp: string,
+      ): Promise<string>;
+    };
+    const getSessionDir = repo.getSessionDir.bind(this.repo);
+
+    repo.createSessionFilePath = async (cwd, sessionId) => {
+      const sessionDir = await getSessionDir(cwd);
+      const joined = await this.env.joinPath([
+        sessionDir,
+        `${shanghaiFileTimestamp()}_${sessionId}.jsonl`,
+      ]);
+      if (!joined.ok) throw joined.error;
+      return joined.value;
+    };
+  }
+
   async resetSession(scopeId: string): Promise<void> {
     this.entries.delete(scopeId);
   }
@@ -168,4 +197,22 @@ export class HarnessManager {
       }
     }
   }
+}
+
+function appendSessionInstructions(
+  basePrompt: string,
+  chatType: HarnessEntry["chatType"],
+): string {
+  if (chatType !== "diary") return basePrompt;
+
+  return `${basePrompt}
+
+---
+# 当前会话：日记群
+- 用户消息会带有场景标记：
+  - [日记群新日记]：这是一条新的日记根消息，必须先调用 write_episode 工具把原文蒸馏成 episode。
+  - [日记群追问]：这是用户在同一篇日记上下文里继续回复，不是新的日记；不要求调用 write_episode。
+- 如果内容涉及正在推进的项目、开放问题或明确决策，再调用 upsert_working_item。
+- 对 [日记群新日记]，在完成必要工具调用前不要输出面向用户的回复文本；工具完成后再简短回应。
+- 对 [日记群追问]，可以直接自然回复；需要检索或更新工作集时再调用工具。`;
 }

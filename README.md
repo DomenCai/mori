@@ -40,6 +40,7 @@ personal-agent status   # 查看状态与日志路径
 
 | 命令 | 作用 |
 |---|---|
+| `/help` | 查看命令列表 |
 | `/new-diary-group` | 创建日记群 |
 | `/new` | 重置当前会话 |
 | `/compact` | 压缩当前会话上下文 |

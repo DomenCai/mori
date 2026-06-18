@@ -58,16 +58,16 @@ personal-agent run       # 前台运行（调试 / 首次扫码用）
 | `llm-providers.json` | provider / 模型 / 路由配置 |
 | `agent/` | 提示词（`soul.md` 等），可按需修改 |
 | `app.db` | SQLite 数据库 |
-| `sessions/` | 会话状态 |
-| `logs/agent.log` | 后台运行日志 |
+| `sessions/` | 会话状态，JSONL 文件按上海时间命名 |
+| `logs/YYYY-MM-DD.log` | 运行日志，按上海日期切分 |
 | `agent.pid` | 运行中进程的 pid |
 
 ## 日志
 
-后台模式下 stdout/stderr 全部重定向到 `~/.personal-agent/logs/agent.log`，未捕获异常的完整栈也会落盘 —— 后台崩溃能查到原因。
+运行时 stdout/stderr 会按上海日期写入 `~/.personal-agent/logs/YYYY-MM-DD.log`。前台 `run` 会同时保留终端输出；后台 `start` 只写日志文件。
 
 ```bash
-tail -f ~/.personal-agent/logs/agent.log
+tail -f ~/.personal-agent/logs/$(date +%F).log
 LOG_LEVEL=debug personal-agent run   # 临时调高日志级别
 ```
 

@@ -15,6 +15,19 @@ interface CommandResult {
   handled: boolean;
 }
 
+const HELP_TEXT = `**可用命令**
+
+/help - 查看命令列表
+/new-diary-group - 创建一个日记群
+/new - 重置当前会话
+/compact - 压缩当前会话上下文
+/profile - 查看身份画像
+/profile add <new_text> - 添加身份画像
+/profile remove <old_text> - 删除身份画像中的唯一子串
+/profile replace <old_text> => <new_text> - 替换身份画像中的唯一子串
+/working - 查看工作集
+/consolidate - 手动触发周度合并`;
+
 export async function handleCommand(
   msg: NormalizedMessage,
   ctx: CommandContext,
@@ -25,6 +38,8 @@ export async function handleCommand(
   const [cmd, ...args] = text.split(/\s+/);
 
   switch (cmd) {
+    case "/help":
+      return handleHelp(msg, ctx);
     case "/new-diary-group":
       return handleNewDiaryGroup(msg, ctx);
     case "/new":
@@ -39,10 +54,18 @@ export async function handleCommand(
       return handleConsolidate(msg, ctx);
     default:
       await ctx.channel.send(msg.chatId, {
-        text: `未知命令: ${cmd}`,
+        text: `未知命令: ${cmd}。发送 /help 查看可用命令。`,
       });
       return { handled: true };
   }
+}
+
+async function handleHelp(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  await ctx.channel.send(msg.chatId, { markdown: HELP_TEXT });
+  return { handled: true };
 }
 
 async function handleNewDiaryGroup(

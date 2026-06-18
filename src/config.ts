@@ -4,7 +4,7 @@ import {
   mkdirSync,
   existsSync,
   copyFileSync,
-  cpSync,
+  statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -115,14 +115,32 @@ function userFile(name: string, devPath: string, seedFrom = devPath): string {
   return target;
 }
 
-/** 用户可改的整个目录（agent 提示词），同上但递归拷贝。 */
-function userDir(name: string, devPath: string): string {
+/** 用户可改的整个目录（agent 提示词），仅补齐必需的缺失 seed 文件。 */
+function userDir(
+  name: string,
+  devPath: string,
+  requiredFiles: readonly string[],
+): string {
   if (isDev) return devPath;
   const target = join(ROOT, name);
   if (!existsSync(target)) {
-    cpSync(devPath, target, { recursive: true });
+    mkdirSync(target, { recursive: true, mode: 0o700 });
     log.info(`已生成 ${target}，可按需修改`);
   }
+
+  if (!statSync(target).isDirectory()) {
+    throw new Error(`${target} 已存在但不是目录`);
+  }
+
+  for (const file of requiredFiles) {
+    const targetFile = join(target, file);
+    if (!existsSync(targetFile)) {
+      mkdirSync(dirname(targetFile), { recursive: true, mode: 0o700 });
+      copyFileSync(join(devPath, file), targetFile);
+      log.info(`已补齐 ${targetFile}，可按需修改`);
+    }
+  }
+
   return target;
 }
 
@@ -131,7 +149,11 @@ export const llmConfigPath = userFile(
   join(REPO_ROOT, "data", "llm-providers.json"),
   join(REPO_ROOT, "data", "llm-providers.example.json"),
 );
-export const agentDir = userDir("agent", join(REPO_ROOT, "agent"));
+export const agentDir = userDir("agent", join(REPO_ROOT, "agent"), [
+  "soul.md",
+  "memory_policy.md",
+  "response_style.md",
+]);
 
 // .env 必须先于任何环境变量读取；生产首次从 .env.example seed（占位 key 需用户填）。
 loadEnv({ path: userFile(".env", join(REPO_ROOT, ".env"), join(REPO_ROOT, ".env.example")) });
