@@ -1,0 +1,151 @@
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  copyFileSync,
+  cpSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { config as loadEnv } from "dotenv";
+import type { Model } from "@earendil-works/pi-ai";
+
+interface ProviderConfig {
+  type: string;
+  baseUrl: string;
+  apiKeyEnv: string;
+  headers?: Record<string, string>;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  input?: string[];
+}
+
+interface ModelProfile {
+  provider: string;
+  model: string;
+}
+
+interface LlmConfig {
+  providers: Record<string, ProviderConfig>;
+  model_profiles: Record<string, ModelProfile>;
+  routes: Record<string, string>;
+}
+
+const PROVIDER_API_MAP: Record<string, string> = {
+  anthropic: "anthropic-messages",
+  openai_response: "openai-responses",
+  openai_completions: "openai-completions",
+  xai_responses: "openai-responses",
+};
+
+let _config: LlmConfig | null = null;
+
+export function loadLlmConfig(
+  configPath?: string,
+): LlmConfig {
+  if (_config) return _config;
+  const path = configPath ?? llmConfigPath;
+  _config = JSON.parse(readFileSync(path, "utf-8")) as LlmConfig;
+  return _config;
+}
+
+export function resolveModelRoute(
+  routeName: string,
+  config?: LlmConfig,
+): { model: Model<any>; apiKey: string } {
+  const cfg = config ?? loadLlmConfig();
+  const profileName = cfg.routes[routeName];
+  if (!profileName) throw new Error(`未找到路由: ${routeName}`);
+
+  const profile = cfg.model_profiles[profileName];
+  if (!profile) throw new Error(`未找到模型配置: ${profileName}`);
+
+  const provider = cfg.providers[profile.provider];
+  if (!provider) throw new Error(`未找到 provider: ${profile.provider}`);
+
+  const apiKey = process.env[provider.apiKeyEnv];
+  if (!apiKey) throw new Error(`环境变量 ${provider.apiKeyEnv} 未设置`);
+
+  const model: Model<any> = {
+    id: profile.model,
+    name: profile.model,
+    api: PROVIDER_API_MAP[provider.type] ?? provider.type,
+    provider: provider.type === "anthropic" ? "anthropic" : "openai",
+    baseUrl: provider.baseUrl,
+    reasoning: provider.reasoning ?? false,
+    input: (provider.input as any) ?? ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: provider.contextWindow ?? 200_000,
+    maxTokens: provider.maxTokens ?? 8192,
+    headers: provider.headers,
+  };
+
+  return { model, apiKey };
+}
+
+// ── 路径解析 ──
+// 运行时状态（config.json / app.db / sessions）与用户可改文件（.env /
+// llm-providers.json / agent 提示词）都挂在 ROOT 下：
+//   正常运行 → ~/.personal-agent；调试（pnpm dev 设 PERSONAL_AGENT_DEV）→ 项目内 ./data。
+// 用户可改文件首次缺失时，从仓库内置默认拷贝过去；调试态直接用仓库原位文件。
+const isDev = !!process.env.PERSONAL_AGENT_DEV;
+const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".personal-agent");
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+const CONFIG_FILE = join(ROOT, "config.json");
+export const sessionsDir = join(ROOT, "sessions");
+export const dbPath = join(ROOT, "app.db");
+
+/** 用户可改的单个文件：调试用仓库原位，生产放 ROOT 并在首次缺失时 seed。 */
+function userFile(name: string, devPath: string, seedFrom = devPath): string {
+  if (isDev) return devPath;
+  const target = join(ROOT, name);
+  if (!existsSync(target)) {
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    copyFileSync(seedFrom, target);
+    console.log(`[init] 已生成 ${target}，可按需修改`);
+  }
+  return target;
+}
+
+/** 用户可改的整个目录（agent 提示词），同上但递归拷贝。 */
+function userDir(name: string, devPath: string): string {
+  if (isDev) return devPath;
+  const target = join(ROOT, name);
+  if (!existsSync(target)) {
+    cpSync(devPath, target, { recursive: true });
+    console.log(`[init] 已生成 ${target}，可按需修改`);
+  }
+  return target;
+}
+
+export const llmConfigPath = userFile(
+  "llm-providers.json",
+  join(REPO_ROOT, "data", "llm-providers.json"),
+);
+export const agentDir = userDir("agent", join(REPO_ROOT, "agent"));
+
+// .env 必须先于任何环境变量读取；生产首次从 .env.example seed（占位 key 需用户填）。
+loadEnv({ path: userFile(".env", join(REPO_ROOT, ".env"), join(REPO_ROOT, ".env.example")) });
+
+export interface LarkConfig {
+  appId: string;
+  appSecret: string;
+  domain: string;
+  tenant: "feishu" | "lark";
+  /** 扫码人 open_id；飞书未返回时为空，由首条私聊消息绑定。 */
+  ownerOpenId?: string;
+}
+
+export function loadLarkConfig(): LarkConfig | null {
+  if (!existsSync(CONFIG_FILE)) return null;
+  return JSON.parse(readFileSync(CONFIG_FILE, "utf-8")) as LarkConfig;
+}
+
+export function saveLarkConfig(cfg: LarkConfig): void {
+  mkdirSync(ROOT, { recursive: true, mode: 0o700 });
+  writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+}

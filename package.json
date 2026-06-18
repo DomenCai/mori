@@ -1,0 +1,36 @@
+{
+  "name": "personal-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "飞书优先的对话型个人 Agent，基于 pi-agent-core",
+  "scripts": {
+    "dev": "PERSONAL_AGENT_DEV=1 tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@10.33.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.79.6",
+    "@earendil-works/pi-ai": "^0.79.6",
+    "@larksuite/channel": "^0.2.0",
+    "better-sqlite3": "^12.11.1",
+    "croner": "^10.0.1",
+    "dotenv": "^17.4.2",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.9.3",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

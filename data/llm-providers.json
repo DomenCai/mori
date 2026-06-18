@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "anthropic": {
+      "type": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "reasoning": false,
+      "contextWindow": 200000,
+      "maxTokens": 8192
+    }
+  },
+  "model_profiles": {
+    "companion": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "strong": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+  },
+  "routes": {
+    "companion": "companion",
+    "weekly": "strong"
+  }
+}

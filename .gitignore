@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/config.json
+data/app.db*
+data/sessions/
+.env
+*.log
+diary-data/
