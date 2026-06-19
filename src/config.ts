@@ -99,10 +99,15 @@ const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".personal-ag
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const CONFIG_FILE = join(ROOT, "config.json");
+export const rootDir = ROOT;
 export const sessionsDir = join(ROOT, "sessions");
 export const dbPath = join(ROOT, "app.db");
 export const logsDir = join(ROOT, "logs");
 export const pidPath = join(ROOT, "agent.pid");
+export const vaultDir = join(ROOT, "vault");
+export const scriptDir = join(ROOT, "script");
+export const schedulesPath = join(ROOT, "schedules.json");
+export const knowledgeIndexPath = join(vaultDir, ".index.md");
 
 /** 用户可改的单个文件：调试用仓库原位，生产放 ROOT；缺失时从示例 seed。 */
 function userFile(name: string, devPath: string, seedFrom = devPath): string {
@@ -167,9 +172,29 @@ export interface LarkConfig {
   ownerOpenId?: string;
   /** 飞书 chat 绑定属于运行配置，不能依赖 app.db，否则重建数据库会丢群绑定。 */
   chatBindings?: LarkChatBinding[];
+  sessionPolicy?: SessionPolicyConfig;
 }
 
 export type LarkChatType = "diary" | "topic" | "notification" | "dm";
+
+export interface SessionPolicyItem {
+  autoClose: boolean;
+  idleMinutes?: number;
+}
+
+export interface SessionPolicyConfig {
+  diary: SessionPolicyItem;
+  dm: SessionPolicyItem;
+  thread: SessionPolicyItem;
+  topic: SessionPolicyItem;
+}
+
+export const defaultSessionPolicy: SessionPolicyConfig = {
+  diary: { autoClose: true, idleMinutes: 60 },
+  dm: { autoClose: true, idleMinutes: 120 },
+  thread: { autoClose: true, idleMinutes: 30 },
+  topic: { autoClose: false },
+};
 
 export interface LarkChatBinding {
   chatId: string;
@@ -180,10 +205,20 @@ export interface LarkChatBinding {
 
 export function loadLarkConfig(): LarkConfig | null {
   if (!existsSync(CONFIG_FILE)) return null;
-  return JSON.parse(readFileSync(CONFIG_FILE, "utf-8")) as LarkConfig;
+  return withLarkConfigDefaults(
+    JSON.parse(readFileSync(CONFIG_FILE, "utf-8")) as LarkConfig,
+  );
 }
 
 export function saveLarkConfig(cfg: LarkConfig): void {
   mkdirSync(ROOT, { recursive: true, mode: 0o700 });
   writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+}
+
+export function withLarkConfigDefaults(cfg: LarkConfig): LarkConfig {
+  cfg.sessionPolicy = {
+    ...defaultSessionPolicy,
+    ...(cfg.sessionPolicy ?? {}),
+  };
+  return cfg;
 }

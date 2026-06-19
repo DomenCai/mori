@@ -41,6 +41,16 @@ export class ChatRegistry {
       .map((item) => item.chatId);
   }
 
+  getNotificationChats(): string[] {
+    return this.bindings()
+      .filter((item) => item.chatType === "notification")
+      .map((item) => item.chatId);
+  }
+
+  getOwnerOpenId(): string | undefined {
+    return this.config.ownerOpenId;
+  }
+
   private bindings(): LarkChatBinding[] {
     this.config.chatBindings ??= [];
     return this.config.chatBindings;

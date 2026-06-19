@@ -1,3 +1,5 @@
+import type { WorkingApprovalPayload } from "../memory/approvals.js";
+
 export type AgentToolStatus = "running" | "done" | "error";
 
 export interface AgentTextBlock {
@@ -92,9 +94,17 @@ export function renderAgentCard(state: AgentCardState): object {
 export function renderToolCard(toolName: string, status: "running" | "done"): object {
   const label: Record<string, string> = {
     write_episode: "写 Episode",
-    upsert_working_item: "更新工作集",
+    create_working_item: "新建工作集",
+    update_working_item: "更新工作集",
+    merge_working_items: "合并工作集",
     update_profile: "更新画像",
     search_diary: "搜索日记",
+    fetch_article: "抓取文章",
+    save_to_garden: "保存知识",
+    grep_vault: "检索 Vault",
+    read_vault: "读取 Vault",
+    update_frontmatter: "更新 Frontmatter",
+    promote: "晋升知识",
   };
   const icon = status === "running" ? "⏳" : "✅";
   return renderMarkdownCard(`${icon} ${label[toolName] ?? toolName}`);
@@ -159,7 +169,11 @@ function renderArgs(toolName: string, args: unknown): string {
 
   if (toolName === "write_episode") {
     pushString(lines, "brief", record.brief);
-  } else if (toolName === "upsert_working_item") {
+  } else if (
+    toolName === "create_working_item" ||
+    toolName === "update_working_item" ||
+    toolName === "merge_working_items"
+  ) {
     pushString(lines, "name", record.name);
     pushString(lines, "status", record.status);
     pushString(lines, "thesis", record.thesis);
@@ -189,7 +203,11 @@ function summarizeArgs(toolName: string, args: unknown): string {
   };
 
   if (toolName === "write_episode") return pick("brief");
-  if (toolName === "upsert_working_item") {
+  if (
+    toolName === "create_working_item" ||
+    toolName === "update_working_item" ||
+    toolName === "merge_working_items"
+  ) {
     const name = pick("name");
     const status = pick("status");
     return status && name ? `${name} → ${status}` : name;
@@ -202,9 +220,17 @@ function summarizeArgs(toolName: string, args: unknown): string {
 function toolLabel(toolName: string): string {
   const label: Record<string, string> = {
     write_episode: "写 Episode",
-    upsert_working_item: "更新工作集",
+    create_working_item: "新建工作集",
+    update_working_item: "更新工作集",
+    merge_working_items: "合并工作集",
     update_profile: "更新画像",
     search_diary: "搜索日记",
+    fetch_article: "抓取文章",
+    save_to_garden: "保存知识",
+    grep_vault: "检索 Vault",
+    read_vault: "读取 Vault",
+    update_frontmatter: "更新 Frontmatter",
+    promote: "晋升知识",
   };
   return label[toolName] ?? toolName;
 }
@@ -215,6 +241,107 @@ function markdown(content: string): object {
 
 function note(content: string): object {
   return { tag: "markdown", content, text_size: "notation" };
+}
+
+export function renderApprovalCard(
+  approvalId: string,
+  payload: WorkingApprovalPayload,
+  status: "pending" | "applied" | "rejected" | "failed" | "expired" = "pending",
+): object {
+  const elements: object[] = [
+    markdown(`**工作集变更审批**\n\n${approvalSummary(payload)}`),
+    note(`approval_id: ${approvalId}`),
+  ];
+
+  if (status === "pending") {
+    elements.push({
+      tag: "column_set",
+      flex_mode: "none",
+      background_style: "default",
+      columns: [
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 1,
+          elements: [
+            approvalButton("应用", "primary", {
+              approval_id: approvalId,
+              action: "approve",
+            }),
+          ],
+        },
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 1,
+          elements: [
+            approvalButton("忽略", "default", {
+              approval_id: approvalId,
+              action: "reject",
+            }),
+          ],
+        },
+      ],
+    });
+  } else {
+    elements.push(note(`状态：${approvalStatusText(status)}`));
+  }
+
+  return {
+    schema: "2.0",
+    body: { elements },
+  };
+}
+
+function approvalButton(
+  text: string,
+  type: "primary" | "default",
+  value: Record<string, string>,
+): object {
+  return {
+    tag: "button",
+    text: { tag: "plain_text", content: text },
+    type,
+    width: "fill",
+    behaviors: [{ type: "callback", value }],
+  };
+}
+
+function approvalSummary(payload: WorkingApprovalPayload): string {
+  const data = payload.data as Record<string, any>;
+  if (payload.tool_name === "batch_update_working_items") {
+    const updates = Array.isArray(data.updates) ? data.updates : [];
+    return [
+      `批量更新：${updates.length} 个工作集`,
+      ...updates.slice(0, 6).map((update: Record<string, any>) =>
+        `- ${update.id} ${update.name} → ${update.status}`,
+      ),
+      updates.length > 6 ? `- 另 ${updates.length - 6} 个` : "",
+    ].filter(Boolean).join("\n");
+  }
+  if (payload.tool_name === "merge_working_items") {
+    return [
+      `保留：${data.keep_id}`,
+      `合并：${(data.merge_ids ?? []).join(", ")}`,
+      `结果：${data.name} → ${data.status}`,
+      data.thesis ? `主旨：${data.thesis}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  return [
+    `更新：${data.id}`,
+    `名称：${data.name}`,
+    `状态：${data.status}`,
+    data.thesis ? `主旨：${data.thesis}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function approvalStatusText(
+  status: "applied" | "rejected" | "failed" | "expired",
+): string {
+  if (status === "applied") return "已应用";
+  if (status === "rejected") return "已忽略";
+  if (status === "expired") return "已过期";
+  return "执行失败";
 }
 
 function metricsText(m: AgentCardMetrics): string {

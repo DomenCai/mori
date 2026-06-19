@@ -1,8 +1,10 @@
 import type Database from "better-sqlite3";
 import { genId, nowISO } from "../utils.js";
 import type {
-  UpsertWorkingItemData,
+  CreateWorkingItemData,
+  MergeWorkingItemsData,
   UpdateProfileData,
+  UpdateWorkingItemData,
 } from "../agent/schemas.js";
 
 export class MemoryService {
@@ -46,15 +48,14 @@ export class MemoryService {
 
     this.db
       .prepare(
-        `INSERT INTO profile_revisions (id, old_content, new_content, source_episode_ids_json, source_diary_ids_json, reason, run_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO profile_revisions (id, old_content, new_content, source_episode_ids_json, reason, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         genId("pr"),
         old,
         newContent!,
         JSON.stringify(data.source_episode_ids ?? []),
-        JSON.stringify(data.source_diary_ids ?? []),
         data.reason,
         runId ?? null,
         now,
@@ -77,36 +78,16 @@ export class MemoryService {
       .all() as any;
   }
 
-  upsertWorkingItem(data: UpsertWorkingItemData, sourceIds: string[] = []): string {
+  createWorkingItem(data: CreateWorkingItemData, sourceIds: string[] = []): string {
     const now = nowISO();
-
-    if (data.id) {
-      const existing = this.db
-        .prepare("SELECT id FROM working_items WHERE id = ?")
-        .get(data.id);
-      if (existing) {
-        const sets: string[] = [];
-        const vals: any[] = [];
-        sets.push("name = ?"); vals.push(data.name);
-        sets.push("type = ?"); vals.push(data.type);
-        sets.push("status = ?"); vals.push(data.status);
-        sets.push("updated_at = ?"); vals.push(now);
-        sets.push("last_mentioned_at = ?"); vals.push(now);
-
-        if (data.thesis !== undefined) { sets.push("thesis = ?"); vals.push(data.thesis); }
-        if (data.current_questions) { sets.push("current_questions_json = ?"); vals.push(JSON.stringify(data.current_questions)); }
-        if (data.decisions) { sets.push("decisions_json = ?"); vals.push(JSON.stringify(data.decisions)); }
-        if (data.next_steps) { sets.push("next_steps_json = ?"); vals.push(JSON.stringify(data.next_steps)); }
-        if (data.related_people) { sets.push("related_people_json = ?"); vals.push(JSON.stringify(data.related_people)); }
-        if (sourceIds.length) { sets.push("source_ids_json = ?"); vals.push(JSON.stringify(sourceIds)); }
-
-        vals.push(data.id);
-        this.db.prepare(`UPDATE working_items SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
-        return data.id;
-      }
+    const duplicate = this.findDuplicateWorkingItem(data.type, data.name);
+    if (duplicate) {
+      throw new Error(
+        `已存在同名 ${data.type} 工作集：${duplicate.id} ${duplicate.name}，请改用 update_working_item`,
+      );
     }
 
-    const id = data.id ?? genId("wi");
+    const id = genId("wi");
     this.db
       .prepare(
         `INSERT INTO working_items (id, type, name, status, thesis, current_questions_json, decisions_json, next_steps_json, related_people_json, source_ids_json, created_at, updated_at, last_mentioned_at)
@@ -129,4 +110,94 @@ export class MemoryService {
       );
     return id;
   }
+
+  updateWorkingItem(data: UpdateWorkingItemData, sourceIds: string[] = []): string {
+    const existing = this.getWorkingItem(data.id);
+    if (!existing) {
+      throw new Error(`工作集不存在：${data.id}`);
+    }
+
+    this.applyWorkingItemUpdate(data.id, data, sourceIds);
+    return data.id;
+  }
+
+  mergeWorkingItems(data: MergeWorkingItemsData, sourceIds: string[] = []): string {
+    if (data.merge_ids.includes(data.keep_id)) {
+      throw new Error("merge_ids 不能包含 keep_id");
+    }
+
+    const keep = this.getWorkingItem(data.keep_id);
+    if (!keep) throw new Error(`保留工作集不存在：${data.keep_id}`);
+
+    const missing = data.merge_ids.filter((id) => !this.getWorkingItem(id));
+    if (missing.length > 0) {
+      throw new Error(`待合并工作集不存在：${missing.join(", ")}`);
+    }
+
+    const tx = this.db.transaction(() => {
+      this.applyWorkingItemUpdate(data.keep_id, data, sourceIds);
+      const now = nowISO();
+      const mergedStatus = data.merged_item_status ?? "dropped";
+      for (const id of data.merge_ids) {
+        this.db
+          .prepare(
+            "UPDATE working_items SET status = ?, updated_at = ?, last_mentioned_at = ? WHERE id = ?",
+          )
+          .run(mergedStatus, now, now, id);
+      }
+    });
+    tx();
+    return data.keep_id;
+  }
+
+  getWorkingItem(id: string): Record<string, any> | null {
+    return (
+      (this.db
+        .prepare("SELECT * FROM working_items WHERE id = ?")
+        .get(id) as Record<string, any> | undefined) ?? null
+    );
+  }
+
+  private applyWorkingItemUpdate(
+    id: string,
+    data: UpdateWorkingItemData | MergeWorkingItemsData,
+    sourceIds: string[] = [],
+  ): void {
+    const now = nowISO();
+    const sets: string[] = [];
+    const vals: any[] = [];
+    sets.push("name = ?"); vals.push(data.name);
+    sets.push("type = ?"); vals.push(data.type);
+    sets.push("status = ?"); vals.push(data.status);
+    sets.push("updated_at = ?"); vals.push(now);
+    sets.push("last_mentioned_at = ?"); vals.push(now);
+
+    if (data.thesis !== undefined) { sets.push("thesis = ?"); vals.push(data.thesis); }
+    if (data.current_questions) { sets.push("current_questions_json = ?"); vals.push(JSON.stringify(data.current_questions)); }
+    if (data.decisions) { sets.push("decisions_json = ?"); vals.push(JSON.stringify(data.decisions)); }
+    if (data.next_steps) { sets.push("next_steps_json = ?"); vals.push(JSON.stringify(data.next_steps)); }
+    if (data.related_people) { sets.push("related_people_json = ?"); vals.push(JSON.stringify(data.related_people)); }
+    if (sourceIds.length) { sets.push("source_ids_json = ?"); vals.push(JSON.stringify(sourceIds)); }
+
+    vals.push(id);
+    this.db.prepare(`UPDATE working_items SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  }
+
+  private findDuplicateWorkingItem(
+    type: string,
+    name: string,
+  ): { id: string; name: string } | null {
+    const normalized = normalizeWorkingItemName(name);
+    const rows = this.db
+      .prepare(
+        `SELECT id, name FROM working_items
+         WHERE type = ? AND status IN ('active', 'dormant')`,
+      )
+      .all(type) as Array<{ id: string; name: string }>;
+    return rows.find((row) => normalizeWorkingItemName(row.name) === normalized) ?? null;
+  }
+}
+
+function normalizeWorkingItemName(name: string): string {
+  return name.trim().toLowerCase();
 }

@@ -7,22 +7,30 @@ import {
   resolveModelRoute,
   sessionsDir,
   logsDir,
+  withLarkConfigDefaults,
   type LarkConfig,
 } from "./config.js";
 import { initChannel } from "./lark/channel.js";
 import { runRegistrationWizard } from "./lark/setup.js";
 import { ChatRegistry } from "./lark/chatRegistry.js";
-import { handleCommand, type CommandContext } from "./lark/commands.js";
+import {
+  handleCommand,
+  renderSchedulesCard,
+  type CommandContext,
+} from "./lark/commands.js";
 import { HarnessManager } from "./agent/harness.js";
 import {
   handleChatMessage,
   handleDiaryMessage,
+  handleNotificationMessage,
   isDiaryEntryMessage,
 } from "./lark/messageHandlers.js";
 import { initSchedules } from "./schedule/cron.js";
 import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
-import type { NormalizedMessage } from "@larksuite/channel";
+import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
+import { renderApprovalCard } from "./lark/cards.js";
+import { toggleScheduleEnabled } from "./schedule/config.js";
 
 const bootLog = logger("boot");
 const larkLog = logger("lark");
@@ -46,6 +54,7 @@ async function runForeground() {
   let loaded = loadLarkConfig();
   if (!loaded) {
     loaded = await runRegistrationWizard();
+    loaded = withLarkConfigDefaults(loaded);
     saveLarkConfig(loaded);
     bootLog.info("飞书配置已保存到 ~/.personal-agent/config.json");
   }
@@ -110,6 +119,8 @@ async function runForeground() {
         return;
       }
 
+      harnessManager.getMessageService().saveUserMessage(msg);
+
       // 命令路由
       const { handled } = await handleCommand(msg, cmdCtx);
       if (handled) {
@@ -130,17 +141,39 @@ async function runForeground() {
         return;
       }
 
-      // 对话处理
-      if (resolvedType === "diary") {
+      if (msg.threadId) {
+        await handleChatMessage(msg, channel, harnessManager, "thread");
+      } else if (resolvedType === "diary") {
         await handleDiaryMessage(
           msg,
           channel,
           harnessManager,
           isDiaryEntryMessage(msg) ? "entry" : "reply",
         );
+      } else if (resolvedType === "notification") {
+        const handledNotification = await handleNotificationMessage(
+          msg,
+          channel,
+          harnessManager,
+        );
+        if (!handledNotification) {
+          await channel.send(msg.chatId, {
+            text: "这条通知群消息没有关联到知识卡片，已忽略。",
+          });
+        }
+      } else if (resolvedType === "topic") {
+        await handleChatMessage(msg, channel, harnessManager, "topic");
       } else {
-        await handleChatMessage(msg, channel, harnessManager, resolvedType);
+        await handleChatMessage(msg, channel, harnessManager, "dm");
       }
+    },
+    cardAction: async (evt: CardActionEvent) => {
+      if (cmdCtx.ownerOpenId && evt.operator.openId !== cmdCtx.ownerOpenId) {
+        larkLog.debug(`忽略非 owner 卡片动作 from=${evt.operator.openId}`);
+        return;
+      }
+      if (await handleScheduleAction(evt, channel)) return;
+      await handleApprovalAction(evt, channel, harnessManager);
     },
     error: (err) => {
       larkLog.error("错误:", err.message);
@@ -158,7 +191,9 @@ async function runForeground() {
 
   // ── 6. 空闲清理 ──
   setInterval(() => {
-    harnessManager.cleanupIdle(60 * 60 * 1000);
+    harnessManager.cleanupIdle(larkConfig.sessionPolicy!).catch((err) => {
+      bootLog.error("空闲 scope 清理失败:", err);
+    });
   }, 5 * 60 * 1000);
 
   // ── 7. 启动 ──
@@ -173,6 +208,81 @@ async function runForeground() {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+async function handleScheduleAction(
+  evt: CardActionEvent,
+  channel: ReturnType<typeof initChannel>,
+): Promise<boolean> {
+  const value = evt.action.value;
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.action !== "toggle_schedule") return false;
+  const scheduleId = record.schedule_id;
+  if (typeof scheduleId !== "string") return false;
+
+  let config;
+  try {
+    config = toggleScheduleEnabled(scheduleId);
+  } catch {
+    await channel.send(evt.chatId, { text: `定时任务不存在：${scheduleId}` });
+    return true;
+  }
+  await channel.updateCard(evt.messageId, renderSchedulesCard(config));
+  return true;
+}
+
+async function handleApprovalAction(
+  evt: CardActionEvent,
+  channel: ReturnType<typeof initChannel>,
+  harnessManager: HarnessManager,
+): Promise<void> {
+  const value = evt.action.value;
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const approvalId = record.approval_id;
+  const action = record.action;
+  if (typeof approvalId !== "string") return;
+  if (action !== "approve" && action !== "reject") return;
+
+  const approvalService = harnessManager.getApprovalService();
+  const approval = approvalService.get(approvalId);
+  if (!approval) {
+    await channel.send(evt.chatId, { text: `审批不存在：${approvalId}` });
+    return;
+  }
+  const payload = approvalService.parsePayload(approval);
+
+  try {
+    if (action === "reject") {
+      approvalService.reject(approvalId);
+      await channel.updateCard(
+        evt.messageId,
+        renderApprovalCard(approvalId, payload, "rejected"),
+      );
+      return;
+    }
+
+    const applied = approvalService.apply(
+      approvalId,
+      harnessManager.getMemoryService(),
+    );
+    await channel.updateCard(
+      evt.messageId,
+      renderApprovalCard(approvalId, payload, "applied"),
+    );
+    if (applied.chat_id) {
+      await harnessManager.resetSession(applied.chat_id);
+    }
+  } catch (err) {
+    await channel.updateCard(
+      evt.messageId,
+      renderApprovalCard(approvalId, payload, "failed"),
+    );
+    await channel.send(evt.chatId, {
+      text: `审批处理失败：${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────

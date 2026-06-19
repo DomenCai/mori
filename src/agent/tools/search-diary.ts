@@ -10,7 +10,7 @@ export function createSearchDiaryTool(
     name: "search_diary",
     label: "搜索日记",
     description:
-      "对日记原文和 episode 进行全文检索。≥3 字走 FTS，1-2 字走 LIKE 兜底。",
+      "搜索 episode 蒸馏层，并按来源回查相关原文证据。≥3 字走 FTS，1-2 字走 LIKE 兜底。",
     parameters: SearchDiaryParams,
     execute: async (_id, params) => {
       const results = searchDiary(db, params.query, params.limit ?? 10);
@@ -23,7 +23,7 @@ export function createSearchDiaryTool(
       const text = results
         .map(
           (r) =>
-            `[${r.type}] ${r.occurred_at} | ${r.snippet}`,
+            `[${r.type}] ${r.occurred_at} | ${r.snippet}${r.evidence ? `\n证据：${r.evidence.slice(0, 240)}` : ""}`,
         )
         .join("\n");
       return {

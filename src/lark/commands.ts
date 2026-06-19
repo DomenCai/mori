@@ -2,6 +2,8 @@ import type { LarkChannel, NormalizedMessage } from "@larksuite/channel";
 import type Database from "better-sqlite3";
 import { ChatRegistry } from "./chatRegistry.js";
 import type { HarnessManager } from "../agent/harness.js";
+import { scopeIdForMessage } from "../storage/messages.js";
+import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
 
 export interface CommandContext {
   channel: LarkChannel;
@@ -19,13 +21,16 @@ const HELP_TEXT = `**可用命令**
 
 /help - 查看命令列表
 /new-diary-group - 创建一个日记群
+/new-chat <主题> - 创建一个持续主题群
 /new - 重置当前会话
 /compact - 压缩当前会话上下文
 /profile - 查看身份画像
+/profile history - 查看画像变更历史
 /profile add <new_text> - 添加身份画像
 /profile remove <old_text> - 删除身份画像中的唯一子串
 /profile replace <old_text> => <new_text> - 替换身份画像中的唯一子串
 /working - 查看工作集
+/schedules - 查看定时任务配置
 /consolidate - 手动触发周度合并`;
 
 export async function handleCommand(
@@ -42,6 +47,8 @@ export async function handleCommand(
       return handleHelp(msg, ctx);
     case "/new-diary-group":
       return handleNewDiaryGroup(msg, ctx);
+    case "/new-chat":
+      return handleNewChat(msg, ctx, args.join(" "));
     case "/new":
       return handleNew(msg, ctx);
     case "/compact":
@@ -50,6 +57,8 @@ export async function handleCommand(
       return handleProfile(msg, ctx);
     case "/working":
       return handleWorking(msg, ctx);
+    case "/schedules":
+      return handleSchedules(msg, ctx);
     case "/consolidate":
       return handleConsolidate(msg, ctx);
     default:
@@ -86,11 +95,30 @@ async function handleNewDiaryGroup(
   return { handled: true };
 }
 
+async function handleNewChat(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+  topic: string,
+): Promise<CommandResult> {
+  const name = topic.trim() || `主题群 · ${new Date().toLocaleDateString("zh-CN")}`;
+  const { chatId } = await ctx.channel.createChat({
+    name,
+    description: "Personal Agent 主题群",
+    inviteUserIds: [ctx.ownerOpenId],
+    userIdType: "open_id",
+  });
+  ctx.registry.register(chatId, "topic", name);
+  await ctx.channel.send(msg.chatId, {
+    text: `✅ 主题群已创建：${name}`,
+  });
+  return { handled: true };
+}
+
 async function handleNew(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.harnessManager.resetSession(msg.chatId);
+  await ctx.harnessManager.resetSession(scopeIdForMessage(msg));
   await ctx.channel.send(msg.chatId, { text: "🔄 会话已重置" });
   return { handled: true };
 }
@@ -99,8 +127,7 @@ async function handleCompact(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  const entry = await ctx.harnessManager.getOrCreate(msg.chatId, "diary");
-  await entry.harness.compact();
+  await ctx.harnessManager.compactSession(scopeIdForMessage(msg));
   await ctx.channel.send(msg.chatId, { text: "📦 上下文已压缩" });
   return { handled: true };
 }
@@ -116,6 +143,31 @@ async function handleProfile(
     const profile = memory.getProfile();
     await ctx.channel.send(msg.chatId, {
       markdown: `**📋 身份画像**\n\n${profile}`,
+    });
+    return { handled: true };
+  }
+
+  if (rest === "history") {
+    const rows = ctx.db
+      .prepare(
+        `SELECT old_content, new_content, reason, created_at
+         FROM profile_revisions
+         ORDER BY created_at DESC
+         LIMIT 10`,
+      )
+      .all() as Array<{
+      old_content: string | null;
+      new_content: string;
+      reason: string;
+      created_at: string;
+    }>;
+    const text = rows.length
+      ? rows
+        .map((row) => `- [${row.created_at}] ${row.reason}\n${row.new_content}`)
+        .join("\n\n")
+      : "暂无画像变更历史";
+    await ctx.channel.send(msg.chatId, {
+      markdown: `**📋 身份画像历史**\n\n${text}`,
     });
     return { handled: true };
   }
@@ -176,7 +228,7 @@ async function sendProfileUsage(
   ctx: CommandContext,
 ): Promise<CommandResult> {
   await ctx.channel.send(msg.chatId, {
-    text: "用法：/profile | /profile add <new_text> | /profile remove <old_text> | /profile replace <old_text> => <new_text>",
+    text: "用法：/profile | /profile history | /profile add <new_text> | /profile remove <old_text> | /profile replace <old_text> => <new_text>",
   });
   return { handled: true };
 }
@@ -204,11 +256,85 @@ async function handleWorking(
             : item.status === "done"
               ? "✅"
               : "❌";
-      return `${status} **${item.name}**（${item.type}）\n${item.thesis ?? ""}`;
+      return `${status} **${item.name}**（${item.type}）\nID: \`${item.id}\`\n${item.thesis ?? ""}`;
     })
     .join("\n\n");
   await ctx.channel.send(msg.chatId, { markdown: `**📋 工作集**\n\n${text}` });
   return { handled: true };
+}
+
+async function handleSchedules(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  const config = loadSchedulesConfig();
+  await ctx.channel.send(msg.chatId, {
+    card: renderSchedulesCard(config),
+  });
+  return { handled: true };
+}
+
+export function renderSchedulesCard(config: SchedulesConfig): object {
+  const elements: object[] = [
+    { tag: "markdown", content: "**定时任务**" },
+  ];
+
+  for (const schedule of config.schedules) {
+    const status = schedule.enabled ? "启用" : "停用";
+    const trigger = schedule.cron
+      ? schedule.cron
+      : schedule.trigger
+        ? JSON.stringify(schedule.trigger)
+        : "manual";
+    elements.push({
+      tag: "column_set",
+      flex_mode: "none",
+      background_style: "default",
+      columns: [
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 3,
+          elements: [
+            {
+              tag: "markdown",
+              content: `**${schedule.name}** \`${schedule.id}\`\n${schedule.kind} · ${trigger}\n状态：${status}`,
+            },
+          ],
+        },
+        {
+          tag: "column",
+          width: "weighted",
+          weight: 1,
+          elements: [
+            {
+              tag: "button",
+              text: {
+                tag: "plain_text",
+                content: schedule.enabled ? "停用" : "启用",
+              },
+              type: schedule.enabled ? "default" : "primary",
+              width: "fill",
+              behaviors: [
+                {
+                  type: "callback",
+                  value: {
+                    action: "toggle_schedule",
+                    schedule_id: schedule.id,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  return {
+    schema: "2.0",
+    body: { elements },
+  };
 }
 
 async function handleConsolidate(

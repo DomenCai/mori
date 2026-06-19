@@ -1,44 +1,34 @@
--- 原文层（证据层，永不丢）
-CREATE TABLE IF NOT EXISTS diary_entries (
+-- 基建消息日志：所有可被 reply 的聊天正文都按飞书 message_id 存一份。
+CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   chat_id TEXT NOT NULL,
-  source TEXT NOT NULL,
-  input_type TEXT NOT NULL,
+  role TEXT NOT NULL,
   content TEXT NOT NULL,
-  occurred_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  conversation_id TEXT,
-  metadata_json TEXT NOT NULL DEFAULT '{}'
+  reply_to TEXT,
+  thread_id TEXT,
+  root_id TEXT,
+  knowledge_path TEXT,
+  created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_messages_scope_time ON messages(chat_id, thread_id, created_at);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS diary_entries_fts USING fts5(
-  content,
-  content='diary_entries',
-  content_rowid='rowid',
-  tokenize='trigram'
-);
-
-CREATE TRIGGER IF NOT EXISTS diary_ai AFTER INSERT ON diary_entries BEGIN
-  INSERT INTO diary_entries_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-CREATE TRIGGER IF NOT EXISTS diary_ad AFTER DELETE ON diary_entries BEGIN
-  INSERT INTO diary_entries_fts(diary_entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-END;
-CREATE TRIGGER IF NOT EXISTS diary_au AFTER UPDATE ON diary_entries BEGIN
-  INSERT INTO diary_entries_fts(diary_entries_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-  INSERT INTO diary_entries_fts(rowid, content) VALUES (new.rowid, new.content);
-END;
-
--- 单篇蒸馏
+-- 记忆 episode：来源统一为单条消息或 scope 时间窗。
 CREATE TABLE IF NOT EXISTS episodes (
   id TEXT PRIMARY KEY,
-  diary_entry_id TEXT NOT NULL REFERENCES diary_entries(id) ON DELETE CASCADE,
+  source_scope_id TEXT NOT NULL,
+  source_message_id TEXT,
+  source_started_at TEXT NOT NULL,
+  source_ended_at TEXT NOT NULL,
   brief TEXT,
   analysis_json TEXT NOT NULL,
   importance INTEGER NOT NULL DEFAULT 5,
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_episodes_source_scope ON episodes(source_scope_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_source_message ON episodes(source_message_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
   brief,
@@ -59,7 +49,7 @@ CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
   INSERT INTO episodes_fts(rowid, brief, analysis_json) VALUES (new.rowid, new.brief, new.analysis_json);
 END;
 
--- ① 身份画像（单条 prose）
+-- 身份画像（单条 prose）
 CREATE TABLE IF NOT EXISTS profile (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   content TEXT NOT NULL,
@@ -72,13 +62,12 @@ CREATE TABLE IF NOT EXISTS profile_revisions (
   old_content TEXT,
   new_content TEXT NOT NULL,
   source_episode_ids_json TEXT NOT NULL DEFAULT '[]',
-  source_diary_ids_json TEXT NOT NULL DEFAULT '[]',
   reason TEXT NOT NULL,
   run_id TEXT,
   created_at TEXT NOT NULL
 );
 
--- ② 工作集
+-- 工作集
 CREATE TABLE IF NOT EXISTS working_items (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -95,22 +84,26 @@ CREATE TABLE IF NOT EXISTS working_items (
   last_mentioned_at TEXT
 );
 
+-- 待审批工具调用
+CREATE TABLE IF NOT EXISTS pending_tool_approvals (
+  id TEXT PRIMARY KEY,
+  tool_name TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  chat_id TEXT,
+  message_id TEXT,
+  run_id TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_tool_approvals_status ON pending_tool_approvals(status, created_at);
+
 -- 周总结存档
 CREATE TABLE IF NOT EXISTS weekly_summaries (
   id TEXT PRIMARY KEY,
   week_key TEXT NOT NULL UNIQUE,
   summary TEXT NOT NULL,
   created_at TEXT NOT NULL
-);
-
--- 定时任务配置（骨架，v1 只填内置两条）
-CREATE TABLE IF NOT EXISTS schedules (
-  id TEXT PRIMARY KEY,
-  cron TEXT NOT NULL,
-  type TEXT NOT NULL,
-  target_chat_id TEXT,
-  config_json TEXT NOT NULL DEFAULT '{}',
-  enabled INTEGER NOT NULL DEFAULT 1
 );
 
 -- 审计

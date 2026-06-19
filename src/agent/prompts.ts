@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import { agentDir } from "../config.js";
+import { agentDir, knowledgeIndexPath } from "../config.js";
 
 function readPromptFile(name: string): string {
   return readFileSync(join(agentDir, name), "utf-8");
@@ -27,8 +28,10 @@ export interface MemorySnapshot {
   recentEpisodes: Array<{
     brief: string | null;
     occurred_at: string;
-    diary_entry_id: string;
+    source_scope_id: string;
+    source_message_id: string | null;
   }>;
+  knowledgeIndex: string;
 }
 
 export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
@@ -48,7 +51,7 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
 
   const episodes = db
     .prepare(
-      `SELECT brief, occurred_at, diary_entry_id
+      `SELECT brief, occurred_at, source_scope_id, source_message_id
        FROM episodes ORDER BY occurred_at DESC LIMIT 10`,
     )
     .all() as Array<Record<string, any>>;
@@ -69,8 +72,12 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
     recentEpisodes: episodes.map((r) => ({
       brief: r.brief,
       occurred_at: r.occurred_at,
-      diary_entry_id: r.diary_entry_id,
+      source_scope_id: r.source_scope_id,
+      source_message_id: r.source_message_id,
     })),
+    knowledgeIndex: existsSync(knowledgeIndexPath)
+      ? readFileSync(knowledgeIndexPath, "utf-8")
+      : "（知识地图尚未生成）",
   };
 }
 
@@ -86,7 +93,7 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
   if (snapshot.activeWorkingItems.length > 0) {
     const items = snapshot.activeWorkingItems
       .map((item) => {
-        const lines = [`## ${item.name}（${item.type}）`];
+        const lines = [`## ${item.id} | ${item.name}（${item.type}）`];
         if (item.thesis) lines.push(`主旨：${item.thesis}`);
         if (item.current_questions.length)
           lines.push(`当前问题：${item.current_questions.join("；")}`);
@@ -108,6 +115,8 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
       .join("\n");
     sections.push("---\n# 最近日记 episode\n" + eps);
   }
+
+  sections.push("---\n# 知识地图\n" + snapshot.knowledgeIndex);
 
   return sections.join("\n\n");
 }
