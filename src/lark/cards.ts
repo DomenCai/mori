@@ -45,6 +45,75 @@ export function renderThinkingCard(): object {
   return renderMarkdownCard("思考中…");
 }
 
+export interface WeeklyRecordCardData {
+  weekKey: string;
+  recap: string;
+  profileChanges: Array<{ reason: string; delta: string }>;
+  workingChanges: Array<{ name: string; status: string; isNew: boolean }>;
+}
+
+// 卡片 1「这周」：客观记录。做了什么 + 工作集变更（简单列）+ 画像变更（折叠，默认收起）。
+export function renderWeeklyRecordCard(data: WeeklyRecordCardData): object {
+  const elements: object[] = [
+    markdown(`**📊 这周（${data.weekKey}）**`),
+    markdown(data.recap.trim() || "本周没有可记录的事实梳理。"),
+  ];
+
+  if (data.workingChanges.length > 0) {
+    const lines = data.workingChanges
+      .map((c) => `- ${c.isNew ? "新建" : "更新"} ${c.name} → ${c.status}`)
+      .join("\n");
+    elements.push(markdown(`**📌 工作集变更（${data.workingChanges.length}）**\n${lines}`));
+  }
+
+  if (data.profileChanges.length > 0) {
+    const body = data.profileChanges
+      .map((c) => `- ${c.reason}\n  ${c.delta}`)
+      .join("\n");
+    elements.push(
+      collapsiblePanel(`🧠 画像变更（${data.profileChanges.length}）`, body),
+    );
+    elements.push(note("不准确就用 /profile 查看或纠正"));
+  }
+
+  return {
+    schema: "2.0",
+    config: { summary: { content: `这周记录（${data.weekKey}）` } },
+    body: { elements },
+  };
+}
+
+// 卡片 2「朋友的话」：纯散文，没有标题/bullet，就是朋友看完你这周后说的话。
+export function renderWeeklyFriendCard(message: string): object {
+  return {
+    schema: "2.0",
+    config: { summary: { content: "朋友的话" } },
+    body: { elements: [markdown(message.trim() || "……")] },
+  };
+}
+
+function collapsiblePanel(title: string, body: string): object {
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: {
+      title: { tag: "markdown", content: `**${title}**` },
+      vertical_align: "center",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        size: "16px 16px",
+      },
+      icon_position: "follow_text",
+      icon_expanded_angle: -180,
+    },
+    border: { color: "grey", corner_radius: "5px" },
+    vertical_spacing: "8px",
+    padding: "8px 8px 8px 8px",
+    elements: [{ tag: "markdown", content: body, text_size: "notation" }],
+  };
+}
+
 export function createAgentCardState(): AgentCardState {
   return {
     blocks: [],

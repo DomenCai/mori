@@ -62,6 +62,43 @@ export class MemoryService {
       );
   }
 
+  getProfileRevisionsByRun(
+    runId: string,
+  ): Array<{ old_content: string; new_content: string; reason: string }> {
+    return this.db
+      .prepare(
+        "SELECT old_content, new_content, reason FROM profile_revisions WHERE run_id = ? ORDER BY created_at ASC",
+      )
+      .all(runId) as Array<{
+      old_content: string;
+      new_content: string;
+      reason: string;
+    }>;
+  }
+
+  // 周合并里静默 finalize 的工作集变更没有审批卡，靠 updated_at 落在本轮窗口内捞出来，回灌进周总结卡片。
+  getWorkingItemsTouchedSince(
+    sinceIso: string,
+  ): Array<{ name: string; type: string; status: string; isNew: boolean }> {
+    const rows = this.db
+      .prepare(
+        "SELECT name, type, status, created_at, updated_at FROM working_items WHERE updated_at >= ? ORDER BY updated_at ASC",
+      )
+      .all(sinceIso) as Array<{
+      name: string;
+      type: string;
+      status: string;
+      created_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((r) => ({
+      name: r.name,
+      type: r.type,
+      status: r.status,
+      isNew: r.created_at >= sinceIso,
+    }));
+  }
+
   // ── Working Items ──
 
   getActiveWorkingItems(): Array<Record<string, any>> {

@@ -28,14 +28,7 @@ export class DiaryService {
         source.startedAt,
         source.endedAt,
         data.brief,
-        JSON.stringify({
-          facts: data.facts,
-          emotions: data.emotions,
-          thoughts: data.thoughts,
-          blind_spots: data.blind_spots,
-          actions: data.actions,
-          long_term_memory_candidates: data.long_term_memory_candidates,
-        }),
+        JSON.stringify({ observations: data.observations }),
         5,
         source.endedAt,
         now,
@@ -52,17 +45,7 @@ export class DiaryService {
 
     return this.saveEpisode(source, {
       brief,
-      facts: [
-        {
-          text: "原文记录",
-          evidence: content,
-        },
-      ],
-      emotions: [],
-      thoughts: [],
-      blind_spots: [],
-      actions: [],
-      long_term_memory_candidates: [],
+      observations: [{ text: "原文记录", evidence: content }],
     });
   }
 

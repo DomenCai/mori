@@ -1,58 +1,21 @@
 import { Type, type Static } from "@earendil-works/pi-ai";
 
 export const EpisodeParams = Type.Object({
-  brief: Type.String({ description: "一句话概括这篇日记" }),
-  facts: Type.Array(
+  brief: Type.String({ description: "一句话概括这段内容" }),
+  observations: Type.Array(
     Type.Object({
-      text: Type.String(),
-      evidence: Type.String(),
+      text: Type.String({
+        description: "关于用户的一条观察：事实、判断、立场、兴趣、偏好、情绪、决定或未闭环的事",
+      }),
+      evidence: Type.String({ description: "支撑这条观察的原文片段" }),
+      tag: Type.Optional(
+        Type.String({
+          description:
+            "可选标签，如 fact/emotion/judgment/interest/preference/decision/open_loop/trait_signal",
+        }),
+      ),
     }),
-    { description: "客观事实" },
-  ),
-  emotions: Type.Array(
-    Type.Object({
-      emotion: Type.String(),
-      intensity: Type.Number({ minimum: 1, maximum: 5 }),
-      trigger: Type.String(),
-      evidence: Type.String(),
-    }),
-    { description: "情绪" },
-  ),
-  thoughts: Type.Array(
-    Type.Object({
-      text: Type.String(),
-      type: Type.String(),
-      confidence: Type.String(),
-      evidence: Type.String(),
-    }),
-    { description: "想法与思考" },
-  ),
-  blind_spots: Type.Array(
-    Type.Object({
-      text: Type.String(),
-      severity: Type.String(),
-      friend_comment: Type.String(),
-      evidence: Type.String(),
-    }),
-    { description: "盲点" },
-  ),
-  actions: Type.Array(
-    Type.Object({
-      text: Type.String(),
-      priority: Type.String(),
-      due_hint: Type.String(),
-      why_it_matters: Type.String(),
-    }),
-    { description: "行动建议" },
-  ),
-  long_term_memory_candidates: Type.Array(
-    Type.Object({
-      type: Type.String(),
-      content: Type.String(),
-      confidence: Type.String(),
-      reason: Type.String(),
-    }),
-    { description: "长期记忆候选" },
+    { description: "带原文证据的用户上下文观察；一种形状吃所有来源（日记/反应/会话）" },
   ),
 });
 export type EpisodeData = Static<typeof EpisodeParams>;

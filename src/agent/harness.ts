@@ -417,6 +417,12 @@ function appendSessionInstructions(
   basePrompt: string,
   chatType: HarnessEntry["chatType"],
 ): string {
+  // consolidation / knowledge_index 有各自的任务 prompt，不属于这套陪伴会话工具纪律。
+  // 尤其周合并就是唯一自动写画像的路径，绝不能被“绝不修改身份画像”这句压住。
+  if (chatType === "consolidation" || chatType === "knowledge_index") {
+    return basePrompt;
+  }
+
   if (chatType !== "diary") {
     return `${basePrompt}
 
