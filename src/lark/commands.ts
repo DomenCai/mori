@@ -4,6 +4,7 @@ import { ChatRegistry } from "./chatRegistry.js";
 import type { HarnessManager } from "../agent/harness.js";
 import { scopeIdForMessage } from "../storage/messages.js";
 import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
+import { renderInfoCard, renderProfileHistoryCard } from "./cards.js";
 
 export interface CommandContext {
   channel: LarkChannel;
@@ -17,9 +18,7 @@ interface CommandResult {
   handled: boolean;
 }
 
-const HELP_TEXT = `**可用命令**
-
-/help - 查看命令列表
+const HELP_TEXT = `/help - 查看命令列表
 /new-diary-group - 创建一个日记群
 /new-chat <主题> - 创建一个持续主题群
 /new - 重置当前会话
@@ -73,7 +72,7 @@ async function handleHelp(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.channel.send(msg.chatId, { markdown: HELP_TEXT });
+  await ctx.channel.send(msg.chatId, { card: renderInfoCard("命令列表", HELP_TEXT) });
   return { handled: true };
 }
 
@@ -142,7 +141,7 @@ async function handleProfile(
   if (!rest) {
     const profile = memory.getProfile();
     await ctx.channel.send(msg.chatId, {
-      markdown: `**📋 身份画像**\n\n${profile}`,
+      card: renderInfoCard("📋 身份画像", profile),
     });
     return { handled: true };
   }
@@ -161,13 +160,8 @@ async function handleProfile(
       reason: string;
       created_at: string;
     }>;
-    const text = rows.length
-      ? rows
-        .map((row) => `- [${row.created_at}] ${row.reason}\n${row.new_content}`)
-        .join("\n\n")
-      : "暂无画像变更历史";
     await ctx.channel.send(msg.chatId, {
-      markdown: `**📋 身份画像历史**\n\n${text}`,
+      card: renderProfileHistoryCard(rows),
     });
     return { handled: true };
   }
@@ -259,7 +253,7 @@ async function handleWorking(
       return `${status} **${item.name}**（${item.type}）\nID: \`${item.id}\`\n${item.thesis ?? ""}`;
     })
     .join("\n\n");
-  await ctx.channel.send(msg.chatId, { markdown: `**📋 工作集**\n\n${text}` });
+  await ctx.channel.send(msg.chatId, { card: renderInfoCard("📋 工作集", text) });
   return { handled: true };
 }
 

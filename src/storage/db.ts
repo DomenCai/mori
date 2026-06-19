@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dbPath as defaultDbPath } from "../config.js";
+import { EMPTY_PROFILE } from "../memory/service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -26,7 +27,7 @@ export function initDb(db: Database.Database): void {
   if (!profileExists) {
     db.prepare(
       "INSERT INTO profile (id, content, updated_at) VALUES (1, ?, ?)",
-    ).run("（尚未建立身份画像）", new Date().toISOString());
+    ).run(EMPTY_PROFILE, new Date().toISOString());
   }
 }
 

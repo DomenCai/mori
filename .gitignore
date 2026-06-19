@@ -9,3 +9,4 @@ data/llm-providers.json
 .env
 *.log
 diary-data/
+data/schedules.json

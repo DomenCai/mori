@@ -7,6 +7,8 @@ import type {
   UpdateWorkingItemData,
 } from "../agent/schemas.js";
 
+export const EMPTY_PROFILE = "（尚未建立身份画像）";
+
 export class MemoryService {
   constructor(private db: Database.Database) {}
 
@@ -20,12 +22,15 @@ export class MemoryService {
   }
 
   updateProfile(data: UpdateProfileData, runId?: string): void {
-    const old = this.getProfile();
+    const stored = this.getProfile();
+    // 占位符不该和正文共存：先剥掉它，old 为真正的画像正文（"" 表示尚无画像）。
+    // 这样即便历史脏数据把占位符 baked 进了正文，下一次编辑也会自动清掉。
+    const old = stored.replace(EMPTY_PROFILE, "").trim();
     let newContent: string;
 
     switch (data.operation) {
       case "add":
-        newContent = old + "\n" + (data.new_text ?? "");
+        newContent = old ? old + "\n" + (data.new_text ?? "") : (data.new_text ?? "");
         break;
       case "replace": {
         if (!data.old_text) throw new Error("replace 需要 old_text");
@@ -43,8 +48,9 @@ export class MemoryService {
       }
     }
 
+    const finalContent = newContent!.trim() || EMPTY_PROFILE; // 删空了回到占位符
     const now = nowISO();
-    this.db.prepare("UPDATE profile SET content = ?, updated_at = ? WHERE id = 1").run(newContent!, now);
+    this.db.prepare("UPDATE profile SET content = ?, updated_at = ? WHERE id = 1").run(finalContent, now);
 
     this.db
       .prepare(
@@ -53,8 +59,8 @@ export class MemoryService {
       )
       .run(
         genId("pr"),
-        old,
-        newContent!,
+        stored,
+        finalContent,
         JSON.stringify(data.source_episode_ids ?? []),
         data.reason,
         runId ?? null,

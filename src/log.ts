@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { shanghaiDateKey } from "./utils.js";
+import { shanghaiDateKey, logTimestamp } from "./utils.js";
 
 // 极简结构化日志：时间戳 + level + scope。输出到 stdout/stderr。
 // run/dev 模式会安装 stdout/stderr tee，按上海日期写入 logs/YYYY-MM-DD.log。
@@ -10,14 +10,6 @@ type Level = keyof typeof LEVELS;
 
 const threshold = LEVELS[process.env.LOG_LEVEL as Level] ?? LEVELS.info;
 let dailyFileLoggingInstalled = false;
-
-function timestamp(): string {
-  const d = new Date();
-  const p = (n: number, w = 2) => String(n).padStart(w, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(
-    d.getMinutes(),
-  )}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
-}
 
 export function dailyLogPath(logsDir: string, date = new Date()): string {
   return join(logsDir, `${shanghaiDateKey(date)}.log`);
@@ -60,7 +52,7 @@ export function installDailyFileLogging(logsDir: string): string {
 
 function emit(level: Level, scope: string, args: unknown[]): void {
   if (LEVELS[level] < threshold) return;
-  const prefix = `${timestamp()} ${level.toUpperCase().padEnd(5)} [${scope}]`;
+  const prefix = `${logTimestamp()} ${level.toUpperCase().padEnd(5)} [${scope}]`;
   (level === "error" || level === "warn" ? console.error : console.log)(
     prefix,
     ...args,

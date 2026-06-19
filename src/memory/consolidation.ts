@@ -4,7 +4,7 @@ import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { DiaryService } from "../diary/service.js";
 import { MemoryService } from "./service.js";
-import { genId, nowISO, weekKey } from "../utils.js";
+import { genId, nowISO, weekKey, summarizeTextDelta } from "../utils.js";
 import { logger } from "../log.js";
 import { renderApprovalCard, renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
 import { MessageService } from "../storage/messages.js";
@@ -16,6 +16,7 @@ export async function runConsolidation(
   harnessManager: HarnessManager,
   channel: LarkChannel,
   registry: ChatRegistry,
+  since?: string,
 ): Promise<void> {
   const diaryService = new DiaryService(db);
   const memoryService = new MemoryService(db);
@@ -23,7 +24,7 @@ export async function runConsolidation(
   const now = new Date();
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() - 7);
-  const episodes = diaryService.getEpisodesSince(weekStart.toISOString());
+  const episodes = diaryService.getEpisodesSince(since ?? weekStart.toISOString());
 
   if (episodes.length === 0) {
     log.info("本周无 episode，跳过");
@@ -86,6 +87,9 @@ ${episodeSummaries}
       captured += event.assistantMessageEvent.delta;
     }
     if (event.type === "tool_execution_end") {
+      // 模型常把叙述文本和 toolCall 放在同一条消息里；recap 只要最后一次工具调用之后的正文，
+      // 所以每次工具结束就清空，丢掉中间的“让我看看…”这类过程叙述。
+      captured = "";
       await sendApprovalCardIfNeeded(
         event.result,
         db,
@@ -98,7 +102,7 @@ ${episodeSummaries}
 
   let finalizedWorkingUpdates = false;
   const runStartIso = nowISO();
-  const wk = weekKey();
+  const wk = weekKey(new Date(episodes[episodes.length - 1].occurred_at as string));
   const diaryChats = registry.getDiaryChats();
   const messageService = new MessageService(db);
   try {
@@ -124,7 +128,7 @@ ${episodeSummaries}
       .getProfileRevisionsByRun(runId)
       .map((r) => ({
         reason: r.reason,
-        delta: summarizeProfileDelta(r.old_content, r.new_content),
+        delta: summarizeTextDelta(r.old_content, r.new_content),
       }));
     const workingChanges = memoryService.getWorkingItemsTouchedSince(runStartIso);
 
@@ -254,28 +258,6 @@ function buildEpisodeTranscript(
   const full = messages.map((m) => `${m.role}: ${m.content}`).join("\n");
   if (full.length <= MAX_EPISODE_TRANSCRIPT_CHARS) return full;
   return `${full.slice(0, MAX_EPISODE_TRANSCRIPT_CHARS)}\n…（原文过长已截断，完整内容可 search_diary 回查）`;
-}
-
-// 画像是一段文本，update_profile 的 add/replace/remove 都体现为子串变化。
-// 掐掉公共前后缀，留下真正变动的中间段，让用户看到“改了哪句”而不只是“改了”。
-function summarizeProfileDelta(oldText: string, newText: string): string {
-  let p = 0;
-  while (p < oldText.length && p < newText.length && oldText[p] === newText[p]) p++;
-  let s = 0;
-  while (
-    s < oldText.length - p &&
-    s < newText.length - p &&
-    oldText[oldText.length - 1 - s] === newText[newText.length - 1 - s]
-  ) {
-    s++;
-  }
-  const removed = oldText.slice(p, oldText.length - s).trim();
-  const added = newText.slice(p, newText.length - s).trim();
-  const clip = (t: string) => (t.length > 80 ? `${t.slice(0, 80)}…` : t);
-  if (removed && added) return `「${clip(removed)}」→「${clip(added)}」`;
-  if (added) return `＋ ${clip(added)}`;
-  if (removed) return `－ ${clip(removed)}`;
-  return "（无文本变化）";
 }
 
 // 记录卡 / 存档用的纯文本版：客观梳理 + 画像变更 + 工作集变更，让历史和检索仍能命中。

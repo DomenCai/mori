@@ -374,24 +374,27 @@ ${JSON.stringify(files, null, 2)}
     this.consolidationUpdatePlans.delete(runId);
     if (updates.length === 0) return [];
 
-    const needsApproval =
-      updates.length >= 3 ||
-      updates.some((update) => isHighImpactWorkingItemStatus(update.status));
-    if (!needsApproval) {
-      for (const update of updates) {
-        this.memoryService.updateWorkingItem(update);
-      }
-      return [];
+    // 日常字段更新（active↔active、改 next_steps/thesis 等）直接落库，不打扰；
+    // 只有转 dormant/done/dropped 这类高影响状态变更才拎出来单独审批。
+    const highImpact = updates.filter((u) =>
+      isHighImpactWorkingItemStatus(u.status),
+    );
+    const routine = updates.filter(
+      (u) => !isHighImpactWorkingItemStatus(u.status),
+    );
+
+    for (const update of routine) {
+      this.memoryService.updateWorkingItem(update);
     }
+
+    if (highImpact.length === 0) return [];
 
     const approvalId = this.approvalService.createPending({
       toolName: "batch_update_working_items",
       payload: {
         tool_name: "batch_update_working_items",
-        data: { updates },
-        reason: updates.length >= 3
-          ? `周总结/手动合并计划批量更新 ${updates.length} 个工作集`
-          : "周总结/手动合并包含高影响工作集状态变更",
+        data: { updates: highImpact },
+        reason: "周总结/手动合并包含高影响工作集状态变更",
       },
       runId,
     });

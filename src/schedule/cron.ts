@@ -28,20 +28,11 @@ import {
   VaultService,
   type KnowledgeArticle,
 } from "../knowledge/vault.js";
-import { nowISO } from "../utils.js";
+import { nowISO, runWindow } from "../utils.js";
 import { renderMarkdownCard } from "../lark/cards.js";
 
 const log = logger("cron");
 const SCRIPT_TIMEOUT_MS = 60_000;
-const RUN_WINDOW_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
 
 export function initSchedules(
   db: Database.Database,
@@ -220,18 +211,6 @@ async function runScriptSchedule(
 
 export function deterministicSlug(scheduleId: string, window: string): string {
   return slugify(`${scheduleId}-${window}`);
-}
-
-export function runWindow(date: Date): string {
-  const parts = Object.fromEntries(
-    RUN_WINDOW_FORMATTER.formatToParts(date)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
-  const day = `${parts.year}-${parts.month}-${parts.day}`;
-  const hour = parts.hour;
-  const minute = parts.minute;
-  return `${day}T${hour}-${minute}`;
 }
 
 export function resolveScriptPath(script: string): string {

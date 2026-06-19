@@ -1,4 +1,5 @@
 import type { WorkingApprovalPayload } from "../memory/approvals.js";
+import { shanghaiDateTime, summarizeTextDelta } from "../utils.js";
 
 export type AgentToolStatus = "running" | "done" | "error";
 
@@ -38,6 +39,33 @@ export function renderMarkdownCard(content: string): object {
     body: {
       elements: [{ tag: "markdown", content }],
     },
+  };
+}
+
+// 斜杠命令的展示卡片：带蓝色标题栏 + 一段 markdown 正文。
+export function renderInfoCard(title: string, body: string): object {
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: title }, template: "blue" },
+    body: { elements: [markdown(body)] },
+  };
+}
+
+// 画像变更历史卡：每条 = 上海时间 · 原因 + 简洁 delta。
+export function renderProfileHistoryCard(
+  rows: Array<{ old_content: string | null; new_content: string; reason: string; created_at: string }>,
+): object {
+  const elements: object[] = rows.length
+    ? rows.map((r) =>
+        markdown(
+          `**${shanghaiDateTime(new Date(r.created_at))}** · ${r.reason}\n${summarizeTextDelta(r.old_content ?? "", r.new_content)}`,
+        ),
+      )
+    : [markdown("暂无画像变更历史")];
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "📋 身份画像历史" }, template: "blue" },
+    body: { elements },
   };
 }
 
