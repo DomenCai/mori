@@ -25,7 +25,7 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 设了 `PERSONAL_AGENT_DEV=1` 并用 `tsx watch` 热重载。首次运行若无飞书配置，终端会渲染二维码，用飞书 App 扫码即可创建/授权应用，凭据自动写入 `data/config.json`，无需手填 appId/secret。
+`pnpm dev` 设了 `PERSONAL_AGENT_DEV=1` 并用 `tsx watch` 热重载。首次运行若无飞书配置，终端会渲染二维码，用飞书 App 扫码即可创建/授权应用，凭据自动写入 `data/config.json`，无需手填 appId/secret。日记群、主题群、私聊等 chat 绑定也写在这个文件里，重建 `data/app.db` 不会丢群绑定。
 
 ## 配置 LLM
 

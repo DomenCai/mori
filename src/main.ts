@@ -72,7 +72,7 @@ async function runForeground() {
 
   // ── 2. 飞书 ──
   const channel = initChannel(larkConfig);
-  const registry = new ChatRegistry(db);
+  const registry = new ChatRegistry(larkConfig, saveLarkConfig);
 
   // ── 3. Agent 管理器 ──
   const harnessManager = new HarnessManager({
@@ -102,7 +102,8 @@ async function runForeground() {
       if (!cmdCtx.ownerOpenId) {
         if (msg.chatType !== "p2p") return;
         cmdCtx.ownerOpenId = msg.senderId;
-        saveLarkConfig({ ...larkConfig, ownerOpenId: msg.senderId });
+        larkConfig.ownerOpenId = msg.senderId;
+        saveLarkConfig(larkConfig);
         bootLog.info(`owner 已绑定: ${msg.senderId}`);
       } else if (msg.senderId !== cmdCtx.ownerOpenId) {
         larkLog.debug(`忽略非 owner 消息 from=${msg.senderId}`);

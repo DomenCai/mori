@@ -56,7 +56,7 @@ if (entry.chatType === "topic") continue;
 
 ## 会话类型从哪来
 
-收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `chat_registry` 表查这个会话注册成了什么类型；私聊若未注册会自动登记为 `dm`。类型决定了用哪条模型路由、挂哪些工具、以及要不要冷却。`consolidation` 不在注册表里，是周度合并任务按需临时创建的。
+收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `config.json` 的 `chatBindings` 查这个会话注册成了什么类型；私聊若未注册会自动登记为 `dm`。类型决定了用哪条模型路由、挂哪些工具、以及要不要冷却。`consolidation` 不在注册表里，是周度合并任务按需临时创建的。
 
 ## 一个完整的时间线
 

@@ -1,34 +1,48 @@
-import type Database from "better-sqlite3";
 import { nowISO } from "../utils.js";
+import type {
+  LarkChatBinding,
+  LarkChatType,
+  LarkConfig,
+} from "../config.js";
 
-export type ChatType = "diary" | "topic" | "notification" | "dm";
+export type ChatType = LarkChatType;
 
 export class ChatRegistry {
-  constructor(private db: Database.Database) {}
+  // Intentionally mutates this config object in place before persisting it.
+  constructor(
+    private config: LarkConfig,
+    private saveConfig: (cfg: LarkConfig) => void,
+  ) {}
 
   register(chatId: string, chatType: ChatType, name?: string): void {
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO chat_registry (chat_id, chat_type, name, created_at)
-         VALUES (?, ?, ?, ?)`,
-      )
-      .run(chatId, chatType, name ?? null, nowISO());
+    const bindings = this.bindings();
+    const existing = bindings.find((item) => item.chatId === chatId);
+    if (existing) {
+      existing.chatType = chatType;
+      existing.name = name;
+    } else {
+      bindings.push({
+        chatId,
+        chatType,
+        name,
+        createdAt: nowISO(),
+      });
+    }
+    this.saveConfig(this.config);
   }
 
   getType(chatId: string): ChatType | null {
-    const row = this.db
-      .prepare("SELECT chat_type FROM chat_registry WHERE chat_id = ?")
-      .get(chatId) as { chat_type: ChatType } | undefined;
-    return row?.chat_type ?? null;
+    return this.bindings().find((item) => item.chatId === chatId)?.chatType ?? null;
   }
 
   getDiaryChats(): string[] {
-    return (
-      this.db
-        .prepare(
-          "SELECT chat_id FROM chat_registry WHERE chat_type = 'diary'",
-        )
-        .all() as Array<{ chat_id: string }>
-    ).map((r) => r.chat_id);
+    return this.bindings()
+      .filter((item) => item.chatType === "diary")
+      .map((item) => item.chatId);
+  }
+
+  private bindings(): LarkChatBinding[] {
+    this.config.chatBindings ??= [];
+    return this.config.chatBindings;
   }
 }

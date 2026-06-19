@@ -225,7 +225,7 @@ v1 工具清单:
 - **建群**:`channel.createChat({ name, inviteUserIds })` 实现 `/new-diary-group`、`/new-chat`。
 - **主动发消息**:`channel.send(chatId, {...})`(周总结、提醒、通知群转发)。
 - **流式卡片**:`channel.stream(chatId, { card: { initial, producer } })` / `updateCardById`。
-- **ChatRegistry**:`chat_registry` 表记 `chatId → chatType(diary/topic/notification/dm)`,消息入口据此分流到不同处理逻辑。
+- **ChatRegistry**:`config.json` 的 `chatBindings` 记 `chatId → chatType(diary/topic/notification/dm)`,消息入口据此分流到不同处理逻辑。
 - **命令路由**:消息以 `/` 开头走命令处理器,否则走 Agent 对话。
 
 单用户:仅 owner(`senderId`)可用,其余忽略。
@@ -333,14 +333,6 @@ CREATE TABLE working_items (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_mentioned_at TEXT
-);
-
--- 飞书 chat 注册
-CREATE TABLE chat_registry (
-  chat_id TEXT PRIMARY KEY,
-  chat_type TEXT NOT NULL,         -- diary / topic / notification / dm
-  name TEXT,
-  created_at TEXT NOT NULL
 );
 
 -- 周总结存档

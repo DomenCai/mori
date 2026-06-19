@@ -19,7 +19,7 @@
 
 | 文件 | 谁生成 | 内容 | 要不要手改 |
 |---|---|---|---|
-| `config.json` | 首次扫码向导 | 飞书凭据 | 不用手填 |
+| `config.json` | 首次扫码向导 + 运行时自动更新 | 飞书凭据、owner、chat 绑定 | 通常不用手填 |
 | `.env` | 模板 seed | LLM API key | **要填** |
 | `llm-providers.json` | 模板 seed | provider / 模型 / 路由 | 按需 |
 | `agent/*.md` | 模板 seed | 提示词 | 按需 |
@@ -35,8 +35,9 @@
 | `appId` / `appSecret` | 应用凭据 |
 | `domain` / `tenant` | `feishu` 或 `lark`（国际版） |
 | `ownerOpenId` | 主人 open_id；扫码时飞书没返回的话，由第一条私聊消息绑定 |
+| `chatBindings` | 日记群、主题群、私聊等 chat 的类型绑定 |
 
-文件权限自动设为 `0600`，**不要提交到 git**。
+`chatBindings` 放在 `config.json` 而不是 `app.db`，这样重建数据库不会丢已创建群的路由关系。文件权限自动设为 `0600`，**不要提交到 git**。
 
 ## LLM key `.env`
 

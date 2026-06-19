@@ -53,7 +53,7 @@ personal-agent run       # 前台运行（调试 / 首次扫码用）
 
 | 路径 | 内容 |
 |---|---|
-| `config.json` | 飞书凭据（扫码生成） |
+| `config.json` | 飞书凭据、owner、chat 绑定 |
 | `.env` | LLM API key |
 | `llm-providers.json` | provider / 模型 / 路由配置 |
 | `agent/` | 提示词（`soul.md` 等），可按需修改 |

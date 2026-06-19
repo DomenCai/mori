@@ -95,14 +95,6 @@ CREATE TABLE IF NOT EXISTS working_items (
   last_mentioned_at TEXT
 );
 
--- 飞书 chat 注册
-CREATE TABLE IF NOT EXISTS chat_registry (
-  chat_id TEXT PRIMARY KEY,
-  chat_type TEXT NOT NULL,
-  name TEXT,
-  created_at TEXT NOT NULL
-);
-
 -- 周总结存档
 CREATE TABLE IF NOT EXISTS weekly_summaries (
   id TEXT PRIMARY KEY,

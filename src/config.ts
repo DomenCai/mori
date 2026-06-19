@@ -165,6 +165,17 @@ export interface LarkConfig {
   tenant: "feishu" | "lark";
   /** 扫码人 open_id；飞书未返回时为空，由首条私聊消息绑定。 */
   ownerOpenId?: string;
+  /** 飞书 chat 绑定属于运行配置，不能依赖 app.db，否则重建数据库会丢群绑定。 */
+  chatBindings?: LarkChatBinding[];
+}
+
+export type LarkChatType = "diary" | "topic" | "notification" | "dm";
+
+export interface LarkChatBinding {
+  chatId: string;
+  chatType: LarkChatType;
+  name?: string;
+  createdAt: string;
 }
 
 export function loadLarkConfig(): LarkConfig | null {
