@@ -1,102 +1,77 @@
 # 记忆模型
 
-这份文档说明 Personal Agent 怎么"了解你"：四层记忆各自存什么、谁能写、什么时候写。可编辑的策略原文在仓库根的 [`agent/memory_policy.md`](../agent/memory_policy.md)，这里讲的是背后的设计原理和取舍。
+这份文档说明 Personal Agent 怎么"了解你"：四层记忆各自存什么、谁能写、什么时候写。可编辑的策略原文在仓库根的 [`agent/memory_policy.md`](../agent/memory_policy.md)，这里讲背后的设计取舍。
 
 ## 四层记忆
 
 | 层 | 存什么 | 注入时机 | 存储 |
 |---|---|---|---|
-| ① 身份画像 | 稳定的"我"——价值观、好奇心方向、判断习惯、表达风格、稳定关系 | **始终注入** | `profile` |
-| ② 工作集 | "我最近在搞什么"——项目、未闭环问题，带主旨/当前问题/决策/下一步/相关人 | 仅 active 注入 | `working_items` |
-| ③ 最近 episode | 最近几段对话蒸馏出的带证据观察 | 注入给连续性 | `episodes` |
-| ④ 原文 + episode 归档 | 完整原始消息 | 不注入，按需 `search_diary` 检索 | `messages` / `episodes` |
+| ① 身份画像 | 稳定的"我"：价值观、好奇心方向、判断习惯、表达风格、稳定关系 | 始终注入 | `profile` |
+| ② Storylines | 用户生活里正在展开的叙事线：项目、关系、情绪弧线、持续兴趣、身份变化、未闭环的事 | active 全量注入，recent dormant 少量注入 | `storylines` / `storyline_revisions` |
+| ③ Fresh episodes | 尚未被 `daily_memory` 消化的少量新 episode 摘要 | 临时注入 | `episodes` |
+| ④ 原文 + episode 归档 | 完整原始消息和带证据观察 | 不注入，按需 `search_memory` 检索 | `messages` / `episodes` |
 
-越往上越稳定、越浓缩；越往下越原始、越易变。"了解你"的核心是 ①——它每轮都进上下文，是 Agent 眼里的"你"。
+越往上越稳定、越浓缩；越往下越原始、越易变。"了解你"的核心不只是画像，而是画像 + storylines：既知道"你是谁"，也知道"你生活里哪些线正在展开"。
 
-## episode：一种形状吃所有来源
+## episode：证据层，不做长期叙事
 
 每段日记、知识卡反应、会话片段都蒸馏成一条 episode：
 
 ```ts
 {
-  brief: string;                                    // 一句话概括
+  brief: string;
   observations: Array<{
-    text: string;                                   // 关于"你"的一条观察
-    evidence: string;                               // 支撑它的原文片段
-    tag?: string;                                    // fact/emotion/judgment/interest/
-                                                    // preference/blind_spot/trait_signal/open_loop
+    text: string;
+    evidence: string;
+    tag?: string;
   }>;
 }
 ```
 
-日记的情绪、知识卡的立场、对话里的偏好，都是一条带 tag 的 observation。episode **不**预先替周合并给画像下结论——最多用 `tag: "trait_signal"` 标记"这像个稳定特质，值得跨周观察"。正在推进的行动/项目写进工作集，不塞进 observations。
+episode 是检索索引和观察索引，不承担跨天叙事维护，也不预先替周合并给画像下结论。跨 episode 的连续变化由 `daily_memory` 合并进 storylines。
 
-episode 是**检索索引 + 观察索引**，不承担"无损压缩"：周合并会回读原文综合判断，所以薄结构丢了细节也能从原文补回（见下文「保真」）。
+## storylines：中间叙事层
 
-## 写权限：谁能写哪层，什么时候
+`storylines` 取代旧 `working_items`。它不是项目管理表，不记录 decisions/next_steps，而是记录：
 
-这是最容易误解的地方。核心规则一句话：**易变层(②③④)处处实时写，稳定层(①画像)只走周合并去抖**。
+- 这条线是什么：`kind` / `title` / `summary`
+- 当前张力：`current_tension`
+- 态度或情绪如何变化：`emotional_arc`
+- 相关人：`people`
+- 证据：`evidence_episode_ids`
+- 状态：`active` / `dormant` / `closed`
+
+写入只发生在 `daily_memory` 的 dream_agent 里，并且每次变更都写 `storyline_revisions`。`advance_storyline` 的 schema 不允许修改 `title` / `kind`，避免模型每天重命名同一条线。
+
+## daily_memory：每日压缩回路
+
+`daily_memory` 每天 06:00（Asia/Shanghai）处理前一上海自然日，不补跑。它先做机械逻辑，再跑两个窄 agent：
+
+1. 机械收缩：无条件执行。active storyline 超过 21 天未活跃转 dormant；active 超过 12 条时，按最久未活跃优先转 dormant。
+2. dream_agent：有 fresh episodes 时，把新信号合并进 storylines。
+3. nudge_agent：连续沉默达到阈值时，判断是否轻触达。
+4. 审计：所有结果写入同一条 `daily_memory_runs`。
+
+nudge 有代码层硬闸：连续沉默少于 3 天不评估；距上次实际 `send_checkin` 不足 7 天，当天不运行 nudge_agent。prompt 仍要求默认不发，避免把陪伴变成打卡。
+
+## weekly_consolidation：只写画像
+
+周合并不再更新 storylines。它读取本周 `daily_memory_runs`、touched storylines 和 episode evidence，只判断是否需要更新长期 `profile`，并生成两张卡片：
+
+- 卡片 1「这周」：客观记录 + 叙事线索变化 + 画像变更
+- 卡片 2「朋友的话」：纯散文，best-effort，失败不影响已落库的记录
+
+画像变更必须能追到用户证据。周合并回读 episode 原文时只把 `user:` 内容作为画像证据，避免 Agent 把自己曾经说过的话再当作用户事实。
+
+## 写权限
 
 | 路径 | 实时写 | 画像 |
 |---|---|---|
-| 日记群 | episode、工作集 | ❌ 走周合并 |
+| 日记群 | episode | ❌ 走周合并 |
 | 通知群回复知识卡 | episode、promote 知识卡 | ❌ 走周合并 |
-| DM / 话题 / 子话题 | 工作集、关闭时蒸馏 episode | ❌ 走周合并 |
-| 周合并（cron 周日 23:55） | 工作集、**画像** | ✅ 唯一自动写画像的路径 |
+| DM / 话题 / 子话题 | 关闭时蒸馏 episode | ❌ 走周合并 |
+| daily_memory | storylines、daily run 审计、可选 send_checkin | ❌ |
+| 周合并 | weekly summary、**画像** | ✅ 唯一自动写画像路径 |
 | `/profile` 命令 | — | ✅ 显式手动纠正 |
 
-**除了周合并和 `/profile`，没有任何实时路径能改画像。** 日记、对话、通知群一律只实时写 episode/工作集，所有画像变更都汇到周合并。
-
-容易踩的认知误区：把"日记轮拦截画像"和"通知群立刻写 episode"放一起比，会觉得不对称、奇怪。其实它们写的是**不同层**——日记拦的是*画像*，通知群放行的是*episode*。两者都实时写 episode、都不实时写画像，规则完全一致。
-
-## 为什么画像要去抖，而不是实时
-
-画像是稳定的自我模型。**单篇内容或一时情绪直接改画像，会让"你是谁"反复抖动、漂移。** 周合并是那个"强制聚合"的边界：它一次读完一周所有 episode，只在**跨篇稳定、反复出现**的信号上动画像。
-
-所以三层易变、一层去抖的不对称是**刻意的**，对应"改这层会不会因单点信号造成伤害"：
-
-- episode = append-only 原始观察 → 无伤害，实时
-- 工作集 = 本就易变的"在做什么" → 该实时动
-- 画像 = 稳定的"我" → 必须攒够跨篇证据才动
-
-**不要**因为"通知群能立刻记下"就让日记轮直接写画像——那会打掉去抖，重新引入漂移，正是这道闸要防的。
-
-## 保真：周合并回读原文
-
-周合并不只读蒸馏后的 episode，还会按 episode 回读对应的原始消息（`getSourceMessagesForEpisode`），把 `brief + observations + 原文` 一起喂给 weekly 模型。这样 episode 即使蒸馏有损，原文也能兜底——这也是 episode 可以做薄的前提。
-
-两条护栏：
-
-- **只有 `user:` 的原文能作画像证据**，`assistant:`（Agent 自己说过的话）只作上下文。否则 Agent 上周说的"你很重视 X"会变成下周"你重视 X"的证据，自我强化漂移。
-- **原文有长度预算**：单条 episode 的回读原文超过约 2000 字符就截断（episode 的 brief+observations 始终保留，完整内容可 `search_diary` 回查），避免长 DM/话题堆积撑爆 weekly 上下文。
-
-## 闭环：两轮生成，两张卡片
-
-周合并在**同一个 agent session 里连发两条 prompt**（等价于两次用户输入，上下文热着复用，几乎零额外成本），产出两张卡片发到日记群：
-
-**第一轮（机械 + 客观梳理）→ 卡片 1「这周」**
-- 用工具更新工作集、画像
-- 末尾用三五句客观、不带情绪的话记一笔这周发生了什么
-- 卡片：客观梳理（正文）+ 📌 工作集变更（简单列，含静默 finalize 的那些）+ 🧠 画像变更（**可折叠面板，默认收起**，展开看 reason + diff）+ 一句 `/profile` 纠正提示
-
-**第二轮（朋友）→ 卡片 2「朋友的话」**
-- prompt 只说"脱下分析的帽子，你是 soul 里那个朋友，说几句"——**不在这里写死语气**，锋利度全交给 [`agent/soul.md`](../agent/soul.md)，改 soul 即改周报口吻
-- 挑一两件真正想说的（一个模式、一个盲点、或一句真心话），不复盘
-- 卡片：纯散文，没有标题/bullet，就是朋友看完你这周后说的那段话
-
-为什么拆两轮：一次调用里既调工具又写散文，模型处在"执行任务"模式，寄语必然是交差口吻。把机械工作和朋友寄语分到两轮，第二轮才能在"刚把你这周看完"的干净状态下，用 soul 的语气开口。
-
-第二轮是**无工具、best-effort** 的：进朋友轮前清空 active tools（外加 prompt 里一句"只说话不调工具"），杜绝它在记录卡发出后再静默改记忆；机械更新和记录卡在第一轮就已落库存档，朋友轮失败也不影响这些耐久结果，只是少一张寄语卡。
-
-这把"Agent 眼里的你"（画像，卡片 1 可纠正）、"它以为你在做什么"（工作集，卡片 1）、"一个懂你的朋友想对你说的话"（卡片 2）三件事各归其位。两张卡的文本另存一份进 `weekly_summaries`，历史可回看。
-
-## 已知设计点：节奏是日历驱动
-
-当前周合并是固定 cron（周日 23:55），**日历驱动**而非信号驱动。后果：
-
-- 大事多的一周 → 画像最长滞后 7 天，且一大批 episode 堆给一次 run 消化
-- 清淡的一周 → 对着稀薄数据空跑
-
-更好的触发条件是"**攒够 N 条新 episode 或满一周，先到先触发**"：大事多就提前合并、不滞后也不超载；清淡就周日兜底。去抖性质（必须跨篇）完全保留，只是把"什么时候攒够了"从猜固定 7 天改成看真实 episode 量。
-
-对单用户，每周往往够用——这是个记着的设计点，等真感觉到画像滞后再动，避免凭空加复杂度。
+所有热会话都不直接写画像；所有画像变更都汇到周合并或显式 `/profile`。

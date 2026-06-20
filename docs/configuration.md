@@ -1,6 +1,6 @@
 # 配置参考
 
-这份文档集中说明 Personal Agent 的所有配置：文件在哪、各管什么、怎么改。安装与守护运行见 [CLI 使用指南](cli.md)，本地开发见 [开发指南](development.md)。
+这份文档集中说明 Personal Agent 的所有配置：文件在哪、各管什么、怎么改。安装与守护运行见 [CLI 使用指南](cli.md)，本地开发见 [开发指南](development.md)，功能总览见 [文档总览](index.md)。
 
 ## 数据根（ROOT）
 
@@ -20,6 +20,7 @@
 | 文件 | 谁生成 | 内容 | 要不要手改 |
 |---|---|---|---|
 | `config.json` | 首次扫码向导 + 运行时自动更新 | 飞书凭据、owner、chat 绑定 | 通常不用手填 |
+| `schedules.json` | 可选手写覆盖 + `/schedules` 卡片动作 | 定时任务启停、cron 覆盖、script 任务定义 | 按需 |
 | `.env` | 模板 seed | LLM API key | **要填** |
 | `llm-providers.json` | 模板 seed | provider / 模型 / 路由 | 按需 |
 | `agent/*.md` | 模板 seed | 提示词 | 按需 |
@@ -38,6 +39,21 @@
 | `chatBindings` | 日记群、主题群、私聊等 chat 的类型绑定 |
 
 `chatBindings` 放在 `config.json` 而不是 `app.db`，这样重建数据库不会丢已创建群的路由关系。文件权限自动设为 `0600`，**不要提交到 git**。
+
+### sessionPolicy
+
+`config.json` 可覆盖会话自动关闭策略；缺省值由代码补齐：
+
+```jsonc
+"sessionPolicy": {
+  "diary":  { "autoClose": true,  "idleMinutes": 60 },
+  "dm":     { "autoClose": true,  "idleMinutes": 120 },
+  "thread": { "autoClose": true,  "idleMinutes": 30 },
+  "topic":  { "autoClose": false }
+}
+```
+
+清理定时器每 5 分钟读取这份策略并关闭空闲 scope；关闭前会先蒸馏需要收尾的 DM / thread / topic 会话片段。详见 [会话与冷却规则](sessions.md)。
 
 ## LLM key `.env`
 
@@ -93,16 +109,30 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 `soul.md` / `response_style.md` / `memory_policy.md` 等纯 Markdown，定义 Agent 的人格、回复风格、记忆策略。直接编辑，开发态即时生效，生产态重启进程后生效。
 
+## 定时任务 `schedules.json`
+
+内置任务基线写在代码里，`schedules.json` 是覆盖层：只需要写 `id` 和要覆盖的字段；代码不认识的 builtin 会被忽略，script 任务以 JSON 为唯一来源。
+
+默认 builtin：
+
+| id | builtin | 默认触发 |
+|---|---|---|
+| `weekly-summary` | `weekly_summary` | `55 23 * * 0` |
+| `daily-memory` | `daily_memory` | `0 6 * * *` |
+| `knowledge-index` | `knowledge_index` | 新增内容量阈值 |
+
+`/schedules` 会读取合并后的配置，并把启停状态写回 `schedules.json` 的覆盖层。任务行为、script 契约和投递流程见 [定时任务](schedules.md)。
+
 ## 硬编码参数（非配置）
 
 少数运行参数目前写死在代码里，改它们需要改源码并重新 build：
 
 | 参数 | 值 | 位置 |
 |---|---|---|
-| 会话空闲冷却时长 | 60 分钟 | `src/main.ts` |
 | 冷却扫描周期 | 5 分钟 | `src/main.ts` |
+| knowledge index 评估周期 | 1 小时 | `src/schedule/cron.ts` |
 
-会话冷却规则详见 [会话与冷却规则](sessions.md)。
+各会话类型的空闲关闭时长由 `config.json.sessionPolicy` 控制。
 
 ## 升级时配置怎么办
 

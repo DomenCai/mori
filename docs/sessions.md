@@ -1,72 +1,75 @@
 # 会话与冷却规则
 
-Agent 对每个飞书会话（群 / 私聊）各维护一个独立的对话上下文，并在长时间无人说话后自动回收。这份文档讲清楚：什么时候算"接着上一轮聊"，什么时候算"开了个新会话"。
+Agent 对每个飞书 scope 维护一个独立对话上下文，并按 `config.json.sessionPolicy` 自动回收空闲 scope。这份文档讲清楚：什么时候算“接着上一轮聊”，什么时候算“开了个新会话”。
 
-实现见 `src/agent/harness.ts`（`HarnessManager`）与 `src/main.ts` 的清理定时器。
+实现见 `src/agent/harness.ts`（`HarnessManager`）与 `src/main.ts` 的清理定时器；配置字段见 [配置参考](configuration.md)。
 
 ## 一句话规则
 
 > 内存里还在 → 续；不在了 → 新开。
 
-判断追加还是新建，唯一标准就是这个 `chatId` 的会话条目此刻还在不在内存里。没有别的时间戳比较。
+判断追加还是新建，唯一标准就是这个 scope 的会话条目此刻还在不在内存里。没有别的时间戳比较。
+
+scope key 规则：
+
+| 类型 | scope key |
+|---|---|
+| 日记群 / 私聊 / 主题群 | `chatId` |
+| 飞书话题 thread | `chatId:threadId` |
+| 内部任务 | `weekly_consolidation` / `daily_memory_*` / `knowledge_index_*` 等内部 scope |
 
 ## 续聊 vs 新会话
 
-入口是 `HarnessManager.getOrCreate(chatId, chatType)`：
+入口是 `HarnessManager.getOrCreate(scopeId, chatType)`：
 
-- **续聊（append）**：内存 `Map` 里查得到这个 `chatId` → 复用现有 harness，只把"最后活动时间"刷新到当前，带着完整历史继续。
-- **新会话（create）**：查不到 → 新建 harness，并开一个**全新的 JSONL 会话文件**。上一段历史不会带过来，相当于失忆重来。
+- **续聊（append）**：内存 `Map` 里查得到这个 `scopeId` → 复用现有 harness，只把最后活动时间刷新到当前，带着完整历史继续。
+- **新会话（create）**：查不到 → 新建 harness，并开一个全新的 JSONL 会话文件。上一段历史不会带过来，相当于失忆重来。
 
-每个会话条目记着一个 `lastActivityAt`（最后活动时间戳）。每收到一条消息就刷新它 —— 这同时也是"空闲倒计时"的重置。
+每个会话条目记着一个 `lastActivityAt`。每收到一条消息就刷新它，这同时也是空闲倒计时的重置。
 
-## 什么时候会变成"新会话"
+## 什么时候会变成新会话
 
-会话条目从内存消失的三种途径，之后这个 `chatId` 的下一条消息都会触发新建：
+会话条目从内存消失的三种途径，之后同一个 scope 的下一条消息都会触发新建：
 
 | 途径 | 触发条件 | 说明 |
 |---|---|---|
-| 空闲超时 | 连续 **60 分钟**没有新消息 | 主要的冷却机制，见下 |
-| 手动重置 | 发送 `/new` 命令 | 立即清掉当前会话，下条消息从头开始 |
+| 空闲关闭 | 满足 `sessionPolicy` 对应类型的 `idleMinutes` | 主要冷却机制；关闭前会先蒸馏需要收尾的 scope |
+| 手动重置 | 发送 `/new` 命令 | 立即清掉当前 scope，下条消息从头开始 |
 | 进程重启 | `stop` / 崩溃 / 升级重启 | 会话条目是纯内存的，重启后全部清空 |
 
-### 空闲超时（冷却）
+## sessionPolicy
 
-后台有个定时器，**每 5 分钟**扫一遍所有会话条目，凡是 `当前时间 − 最后活动时间 > 60 分钟` 的就回收掉：
+默认策略：
 
-```
-main.ts:  setInterval(() => harnessManager.cleanupIdle(60 * 60 * 1000), 5 * 60 * 1000)
-```
-
-两个参数都**硬编码**在 `src/main.ts`，目前不是可配置项：
-
-- 冷却时长：`60 * 60 * 1000` ms＝60 分钟
-- 扫描周期：`5 * 60 * 1000` ms＝5 分钟
-
-因为是 5 分钟一扫，实际过期时刻会比"满 60 分钟"晚最多 5 分钟，这是预期行为。要改时长直接改这两个数。
-
-## 例外：topic 会话永不冷却
-
-清理时会跳过 `chatType === "topic"` 的会话：
-
-```
-if (entry.chatType === "topic") continue;
+```jsonc
+"sessionPolicy": {
+  "diary":  { "autoClose": true,  "idleMinutes": 60 },
+  "dm":     { "autoClose": true,  "idleMinutes": 120 },
+  "thread": { "autoClose": true,  "idleMinutes": 30 },
+  "topic":  { "autoClose": false }
+}
 ```
 
-`topic`（话题群）的上下文常驻内存，**不受 60 分钟冷却影响**，只能靠 `/new` 或进程重启来重置。其余类型（`diary` 日记群、`dm` 私聊、`consolidation` 周度合并）都走正常冷却。
+后台每 5 分钟扫一遍所有会话条目，按对应策略判断是否关闭：
+
+- `autoClose: false`：不自动关闭，只能靠 `/new`、`compact()` 或进程重启收束。
+- `autoClose: true`：`当前时间 - lastActivityAt > idleMinutes` 时关闭。
+- `thread` 用飞书 thread 独立 scope，默认 30 分钟空闲关闭。
+- `topic` 是 `/new-chat` 创建的持续主题群，默认不自动关闭。
+
+因为是 5 分钟一扫，实际关闭时刻会比刚满 `idleMinutes` 晚最多 5 分钟，这是预期行为。
+
+## 关闭前蒸馏
+
+`dm` / `thread` / `topic` 在关闭或 `/new` / `/compact` 前会先尝试把本段 scope 蒸馏成一条 episode：
+
+- episode 来源是 `source_scope_id + source_started_at/source_ended_at`。
+- 只在本段消息里有用户消息时蒸馏。
+- 若 LLM 写 episode 失败，会写一条 fallback episode，避免这段对话完全丢失。
+- 日记群根消息仍按“每篇一条”写 episode，不靠关闭时蒸馏。
 
 ## 会话类型从哪来
 
-收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `config.json` 的 `chatBindings` 查这个会话注册成了什么类型；私聊若未注册会自动登记为 `dm`。类型决定了用哪条模型路由、挂哪些工具、以及要不要冷却。`consolidation` 不在注册表里，是周度合并任务按需临时创建的。
+收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `config.json.chatBindings` 查群类型；私聊若未注册会自动登记为 `dm`。如果消息带 `threadId`，会优先作为 `thread` scope 处理。类型决定模型路由、工具集、是否按 `sessionPolicy` 自动关闭。
 
-## 一个完整的时间线
-
-```
-10:00  群里第一条消息            → 查无 → 新建会话，倒计时归零
-10:05  又说了一句                → 命中 → 续聊，倒计时刷新
-10:05  之后再没说话
-11:05  满 60 分钟
-11:05~11:10  下一次 5 分钟扫描     → 回收该会话
-11:30  又来一条消息             → 查无（已回收）→ 新建会话，历史清空
-```
-
-中途任意时刻发 `/new`，等价于立刻跳到"回收"那一步。
+`consolidation`、`daily_memory`、`knowledge_index` 是内部任务 scope，不从 chat 绑定来。

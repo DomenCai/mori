@@ -7,11 +7,11 @@
 ## 能做什么
 
 - **日记群**：把日记发到日记群，流式回复像朋友聊天，后台顺手写一条 episode。
-- **四层记忆**：身份画像（慢变、受保护）/ 工作集（在做的项目）/ 最近 episode / 原文归档（FTS 检索），始终在场而不膨胀。
-- **周度总结**：每周日 23:55 读本周日记产出总结，并保守更新画像、增量更新工作集。
-- **记日记提醒**：超过 3 天没记，每天一次提醒。
+- **四层记忆**：身份画像（慢变、受保护）/ storylines（正在展开的生活叙事）/ fresh episodes / 原文归档（FTS 检索），始终在场而不膨胀。
+- **每日记忆整理**：每天 06:00 处理前一天的 fresh episodes，维护 storylines，并在严格节流下判断是否轻触达。
+- **周度总结**：每周日 23:55 读本周 daily runs、storylines 和 episode evidence，保守更新画像并发周记录。
 
-完整产品设计见 [需求文档](docs/personal-agent-mvp.md)，架构实现见 [实施规划](docs/personal-agent-mvp-impl.md)。
+完整文档入口见 [文档总览](docs/index.md)，设计历史见 [Design Index](design/index.md)。
 
 ## 快速开始
 
@@ -42,15 +42,26 @@ personal-agent status   # 查看状态与日志路径
 |---|---|
 | `/help` | 查看命令列表 |
 | `/new-diary-group` | 创建日记群 |
+| `/new-chat <主题>` | 创建持续主题群 |
 | `/new` | 重置当前会话 |
 | `/compact` | 压缩当前会话上下文 |
 | `/consolidate` | 手动触发周度合并 |
 | `/profile` | 查看身份画像（配合自然语言纠错） |
-| `/working` | 查看工作集（配合自然语言纠错） |
+| `/profile history` | 查看画像变更历史 |
+| `/storylines` | 查看 active + recent dormant 叙事线 |
+| `/storyline <id>` | 查看或纠正单条叙事线 |
+| `/dream` | 查看最近 daily_memory runs |
+| `/schedules` | 查看和开关定时任务 |
 
 ## 文档
 
-- [需求文档](docs/personal-agent-mvp.md) —— 要做什么、为什么
-- [实施规划](docs/personal-agent-mvp-impl.md) —— 架构、数据模型、目录结构
+- [文档总览](docs/index.md) —— 当前功能文档入口和覆盖矩阵
+- [飞书命令](docs/commands.md) —— 群、会话、画像、storylines、定时任务命令
+- [记忆模型](docs/memory-model.md) —— 当前 profile / storylines / episodes / daily memory 语义
+- [知识库](docs/knowledge-base.md) —— vault、Inbox/Garden、知识反应和知识工具
+- [定时任务](docs/schedules.md) —— builtin、script 投喂和 knowledge index
+- [配置参考](docs/configuration.md) —— runtime root、配置文件、模型路由和提示词位置
+- [会话与冷却规则](docs/sessions.md) —— scope、续聊、新会话、thread/topic 冷却
 - [开发指南](docs/development.md) —— 本地怎么跑、改提示词、看日志、调试
 - [CLI 使用指南](docs/cli.md) —— 安装、守护进程、配置与日志位置
+- [Design Index](design/index.md) —— dated design 目录入口和新旧优先级
