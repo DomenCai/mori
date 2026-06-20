@@ -40,7 +40,7 @@ export interface MemorySnapshot {
     id: string;
     brief: string | null;
     occurred_at: string;
-    source_scope_id: string;
+    source_conversation_id: string;
     source_message_id: string | null;
   }>;
   knowledgeIndex: string;
@@ -74,7 +74,7 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
 
   const episodes = db
     .prepare(
-      `SELECT id, brief, occurred_at, source_scope_id, source_message_id
+      `SELECT id, brief, occurred_at, source_conversation_id, source_message_id
        FROM episodes
        WHERE digested_run_id IS NULL
        ORDER BY occurred_at ASC
@@ -110,7 +110,7 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
       id: r.id,
       brief: r.brief,
       occurred_at: r.occurred_at,
-      source_scope_id: r.source_scope_id,
+      source_conversation_id: r.source_conversation_id,
       source_message_id: r.source_message_id,
     })),
     knowledgeIndex: existsSync(knowledgeIndexPath)

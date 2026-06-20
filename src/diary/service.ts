@@ -1,29 +1,30 @@
 import type Database from "better-sqlite3";
-import { genId, nowISO } from "../utils.js";
+import type { Clock } from "../clock.js";
+import { systemClock } from "../clock.js";
+import { genId } from "../utils.js";
 import type { EpisodeData } from "../agent/schemas.js";
-import { splitScopeId } from "../storage/messages.js";
 
 export interface EpisodeSource {
-  scopeId: string;
+  conversationId: string;
   messageId: string | null;
   startedAt: string;
   endedAt: string;
 }
 
 export class DiaryService {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database, private clock: Clock = systemClock) {}
 
   saveEpisode(source: EpisodeSource, data: EpisodeData): string {
     const id = genId("ep");
-    const now = nowISO();
+    const now = this.clock.nowISO();
     this.db
       .prepare(
-        `INSERT INTO episodes (id, source_scope_id, source_message_id, source_started_at, source_ended_at, brief, analysis_json, occurred_at, created_at)
+        `INSERT INTO episodes (id, source_conversation_id, source_message_id, source_started_at, source_ended_at, brief, analysis_json, occurred_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
-        source.scopeId,
+        source.conversationId,
         source.messageId,
         source.startedAt,
         source.endedAt,
@@ -59,28 +60,30 @@ export class DiaryService {
     const row = this.db
       .prepare(
         `SELECT 1 FROM episodes
-         WHERE source_scope_id = ? AND source_message_id IS NULL
+         WHERE source_conversation_id = ? AND source_message_id IS NULL
            AND source_started_at = ? AND source_ended_at = ?`,
       )
-      .get(source.scopeId, source.startedAt, source.endedAt);
+      .get(source.conversationId, source.startedAt, source.endedAt);
     return !!row;
   }
 
-  getEpisodesSince(since: string): Array<Record<string, any>> {
+  getEpisodesInWindow(since: string, until: string | null): Array<Record<string, any>> {
+    const untilClause = until ? "AND e.occurred_at < ?" : "";
+    const params = until ? [since, until] : [since];
     return this.db
       .prepare(
         `SELECT e.*,
                 m.content AS source_message_content
          FROM episodes e
          LEFT JOIN messages m ON m.id = e.source_message_id
-         WHERE e.occurred_at >= ?
+         WHERE e.occurred_at >= ? ${untilClause}
          ORDER BY e.occurred_at ASC`,
       )
-      .all(since) as Array<Record<string, any>>;
+      .all(...params) as Array<Record<string, any>>;
   }
 
   getSourceMessagesForEpisode(episode: {
-    source_scope_id: string;
+    source_conversation_id: string;
     source_message_id: string | null;
     source_started_at: string;
     source_ended_at: string;
@@ -88,9 +91,9 @@ export class DiaryService {
     if (episode.source_message_id) {
       return this.db
         .prepare(
-          `SELECT role, content, created_at FROM messages
+          `SELECT role, content, occurred_at AS created_at FROM messages
            WHERE id = ?
-           ORDER BY created_at ASC`,
+           ORDER BY occurred_at ASC`,
         )
         .all(episode.source_message_id) as Array<{
         role: string;
@@ -99,30 +102,14 @@ export class DiaryService {
       }>;
     }
 
-    const { chatId, threadId } = splitScopeId(episode.source_scope_id);
-    if (threadId) {
-      return this.db
-        .prepare(
-          `SELECT role, content, created_at FROM messages
-           WHERE chat_id = ? AND thread_id = ? AND created_at BETWEEN ? AND ?
-           ORDER BY created_at ASC`,
-        )
-        .all(
-          chatId,
-          threadId,
-          episode.source_started_at,
-          episode.source_ended_at,
-        ) as Array<{ role: string; content: string; created_at: string }>;
-    }
-
     return this.db
       .prepare(
-        `SELECT role, content, created_at FROM messages
-         WHERE chat_id = ? AND thread_id IS NULL AND created_at BETWEEN ? AND ?
-         ORDER BY created_at ASC`,
+        `SELECT role, content, occurred_at AS created_at FROM messages
+         WHERE conversation_id = ? AND occurred_at BETWEEN ? AND ?
+         ORDER BY occurred_at ASC`,
       )
       .all(
-        chatId,
+        episode.source_conversation_id,
         episode.source_started_at,
         episode.source_ended_at,
       ) as Array<{ role: string; content: string; created_at: string }>;

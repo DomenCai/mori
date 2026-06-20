@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { LarkChannel } from "@larksuite/channel";
 import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
+import type { Clock, MutableClock } from "../clock.js";
 import { logger } from "../log.js";
 import {
   MAX_ACTIVE_STORYLINES,
@@ -12,6 +13,7 @@ import {
 import {
   previousShanghaiDateKey,
   shanghaiDateRange,
+  shanghaiDateStart,
 } from "../utils.js";
 
 const log = logger("daily_memory");
@@ -35,8 +37,29 @@ export async function runDailyMemory(
   _channel: LarkChannel,
   registry: ChatRegistry,
 ): Promise<void> {
-  const memoryService = new MemoryService(db);
-  const dateKey = previousShanghaiDateKey();
+  const dateKey = previousShanghaiDateKey(harnessManager.getClock().now());
+  await runDailyMemoryForDate({
+    db,
+    harnessManager,
+    registry,
+    dateKey,
+    nudge: true,
+  });
+}
+
+export async function runDailyMemoryForDate(opts: {
+  db: Database.Database;
+  harnessManager: HarnessManager;
+  registry?: ChatRegistry;
+  dateKey: string;
+  clock?: MutableClock;
+  nudge: boolean;
+}): Promise<void> {
+  const { db, harnessManager, registry, dateKey, clock, nudge } = opts;
+  if (clock) {
+    clock.set(new Date(shanghaiDateStart(dateKey).getTime() + 30 * 60 * 60_000));
+  }
+  const memoryService = harnessManager.getMemoryService();
   const existing = memoryService.getDailyMemoryRun(dateKey);
   if (existing) {
     log.info(`daily_memory ${dateKey} 已存在，跳过`);
@@ -70,8 +93,8 @@ export async function runDailyMemory(
     let nudgeEvaluated = false;
     let nudgeSent = false;
     let nudgeText: string | null = null;
-    const nudgeContext = buildNudgeContext(db, memoryService, registry);
-    if (shouldRunNudgeAgent(memoryService, nudgeContext.silentDays)) {
+    const nudgeContext = buildNudgeContext(db, memoryService, harnessManager.getClock());
+    if (nudge && shouldRunNudgeAgent(memoryService, nudgeContext.silentDays, harnessManager.getClock())) {
       nudgeEvaluated = true;
       const result = await runNudgeAgent(
         harnessManager,
@@ -82,6 +105,8 @@ export async function runDailyMemory(
       );
       nudgeSent = result.sent;
       nudgeText = result.text;
+    } else if (nudge && !registry) {
+      log.warn("nudge=true 但未提供 registry，已跳过轻触达");
     }
 
     const storylineChanges = [
@@ -249,11 +274,11 @@ interface NudgeContext {
 function buildNudgeContext(
   db: Database.Database,
   memoryService: MemoryService,
-  _registry: ChatRegistry,
+  clock: Clock,
 ): NudgeContext {
   const lastUserMessageAt = getLastUserMessageAt(db);
   const silentDays = lastUserMessageAt
-    ? Math.floor((Date.now() - new Date(lastUserMessageAt).getTime()) / 86_400_000)
+    ? Math.floor((clock.now().getTime() - new Date(lastUserMessageAt).getTime()) / 86_400_000)
     : null;
   const lastNudge = memoryService.getLastNudgeSentRun();
   return {
@@ -268,12 +293,13 @@ function buildNudgeContext(
 function shouldRunNudgeAgent(
   memoryService: MemoryService,
   silentDays: number | null,
+  clock: Clock,
 ): boolean {
   if (silentDays === null || silentDays < NUDGE_AFTER_SILENT_DAYS) return false;
   const lastNudge = memoryService.getLastNudgeSentRun();
   if (!lastNudge) return true;
   const daysSinceNudge = Math.floor(
-    (Date.now() - new Date(lastNudge.nudge_sent_at ?? lastNudge.updated_at).getTime()) / 86_400_000,
+    (clock.now().getTime() - new Date(lastNudge.nudge_sent_at ?? lastNudge.updated_at).getTime()) / 86_400_000,
   );
   return daysSinceNudge >= MIN_NUDGE_INTERVAL_DAYS;
 }
@@ -284,7 +310,7 @@ function getUndigestedEpisodesForRun(
 ): Array<Record<string, any>> {
   return db
     .prepare(
-      `SELECT id, source_scope_id, source_message_id, brief, analysis_json, occurred_at
+      `SELECT id, source_conversation_id, source_message_id, brief, analysis_json, occurred_at
        FROM episodes
        WHERE digested_run_id IS NULL AND occurred_at < ?
        ORDER BY occurred_at ASC`,
@@ -312,7 +338,7 @@ function formatEpisodesForPrompt(episodes: Array<Record<string, any>>): Array<Re
     occurred_at: episode.occurred_at,
     brief: episode.brief,
     analysis: JSON.parse(String(episode.analysis_json ?? "{}")),
-    source_scope_id: episode.source_scope_id,
+    source_conversation_id: episode.source_conversation_id,
     source_message_id: episode.source_message_id,
   }));
 }
@@ -320,13 +346,13 @@ function formatEpisodesForPrompt(episodes: Array<Record<string, any>>): Array<Re
 function getLastUserMessageAt(db: Database.Database): string | null {
   const row = db
     .prepare(
-      `SELECT created_at FROM messages
-       WHERE role = 'user'
-       ORDER BY created_at DESC
+      `SELECT occurred_at FROM messages
+       WHERE role = 'user' AND source != 'import'
+       ORDER BY occurred_at DESC
        LIMIT 1`,
     )
-    .get() as { created_at: string } | undefined;
-  return row?.created_at ?? null;
+    .get() as { occurred_at: string } | undefined;
+  return row?.occurred_at ?? null;
 }
 
 function getRecentNudges(

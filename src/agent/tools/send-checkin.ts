@@ -3,6 +3,7 @@ import type { LarkChannel } from "@larksuite/channel";
 import { SendCheckinParams } from "../schemas.js";
 import type { ChatRegistry } from "../../lark/chatRegistry.js";
 import type { MessageService } from "../../storage/messages.js";
+import { larkChatConversationId, larkMessageId } from "../../lark/ingest.js";
 
 export function createSendCheckinTool(
   channel: LarkChannel,
@@ -20,8 +21,10 @@ export function createSendCheckinTool(
       for (const chatId of diaryChats) {
         const sent = await channel.send(chatId, { text: params.text });
         messageService.saveAssistantMessage({
-          id: sent.messageId,
-          chatId,
+          id: larkMessageId(sent.messageId)!,
+          source: "lark",
+          conversationId: larkChatConversationId(chatId),
+          conversationType: "diary",
           content: params.text,
         });
       }

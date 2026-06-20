@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
-import { genId, nowISO } from "../utils.js";
+import type { Clock } from "../clock.js";
+import { systemClock } from "../clock.js";
+import { genId } from "../utils.js";
 import type {
   AdvanceStorylineData,
   CreateStorylineData,
@@ -86,7 +88,7 @@ type DailyRunRow = Omit<
 };
 
 export class MemoryService {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database, private clock: Clock = systemClock) {}
 
   // ── Profile ──
 
@@ -125,7 +127,7 @@ export class MemoryService {
     }
 
     const finalContent = newContent!.trim() || EMPTY_PROFILE;
-    const now = nowISO();
+    const now = this.clock.nowISO();
     this.db.prepare("UPDATE profile SET content = ?, updated_at = ? WHERE id = 1").run(finalContent, now);
 
     this.db
@@ -212,16 +214,31 @@ export class MemoryService {
     );
   }
 
-  getStorylineChangesSince(sinceIso: string): StorylineChangeSummary[] {
+  getStorylineChangesByRuns(runIds: string[]): StorylineChangeSummary[] {
+    if (runIds.length === 0) return [];
+    const placeholders = runIds.map(() => "?").join(", ");
     const rows = this.db
       .prepare(
         `SELECT r.operation, r.reason, r.created_at, s.id, s.title, s.status
          FROM storyline_revisions r
          JOIN storylines s ON s.id = r.storyline_id
-         WHERE r.created_at >= ?
+         WHERE r.run_id IN (${placeholders})
          ORDER BY r.created_at ASC`,
       )
-      .all(sinceIso) as Array<StorylineChangeSummary>;
+      .all(...runIds) as Array<StorylineChangeSummary>;
+    return rows;
+  }
+
+  getStorylineChangesInWindow(sinceIso: string, untilIso: string): StorylineChangeSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.operation, r.reason, r.created_at, s.id, s.title, s.status
+         FROM storyline_revisions r
+         JOIN storylines s ON s.id = r.storyline_id
+         WHERE r.created_at >= ? AND r.created_at < ?
+         ORDER BY r.created_at ASC`,
+      )
+      .all(sinceIso, untilIso) as Array<StorylineChangeSummary>;
     return rows;
   }
 
@@ -233,7 +250,7 @@ export class MemoryService {
       );
     }
 
-    const now = nowISO();
+    const now = this.clock.nowISO();
     const id = genId("sl");
     const storyline: Storyline = {
       id,
@@ -266,7 +283,7 @@ export class MemoryService {
 
   advanceStoryline(data: AdvanceStorylineData, runId?: string): string {
     const existing = this.requireStoryline(data.id);
-    const now = nowISO();
+    const now = this.clock.nowISO();
     const next: Storyline = {
       ...existing,
       status: "active",
@@ -297,7 +314,7 @@ export class MemoryService {
 
   setStorylineStatus(data: SetStorylineStatusData, runId?: string): string {
     const existing = this.requireStoryline(data.id);
-    const now = nowISO();
+    const now = this.clock.nowISO();
     const next: Storyline = {
       ...existing,
       status: data.status,
@@ -323,7 +340,7 @@ export class MemoryService {
       throw new Error("merge_ids 不能包含 keep_id");
     }
 
-    const now = nowISO();
+    const now = this.clock.nowISO();
     const tx = this.db.transaction(() => {
       const keep = this.requireStoryline(data.keep_id);
       const merged = data.merge_ids.map((id) => this.requireStoryline(id));
@@ -385,7 +402,7 @@ export class MemoryService {
     activeEpisodeIds?: string[];
     now?: Date;
   } = {}): StorylineChangeSummary[] {
-    const nowDate = opts.now ?? new Date();
+    const nowDate = opts.now ?? this.clock.now();
     const now = nowDate.toISOString();
     const threshold = new Date(
       nowDate.getTime() - DORMANT_AFTER_DAYS * 86_400_000,
@@ -438,6 +455,17 @@ export class MemoryService {
     return rows.map(parseDailyRun);
   }
 
+  getDailyMemoryRunsInDateRange(startDateKey: string, endDateKey: string): DailyMemoryRun[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM daily_memory_runs
+         WHERE date_key >= ? AND date_key < ?
+         ORDER BY date_key ASC`,
+      )
+      .all(startDateKey, endDateKey) as DailyRunRow[];
+    return rows.map(parseDailyRun);
+  }
+
   getLatestCompletedDailyMemoryRun(): DailyMemoryRun | null {
     const row = this.db
       .prepare(
@@ -463,7 +491,7 @@ export class MemoryService {
   }
 
   createDailyMemoryRun(dateKey: string, inputEpisodeIds: string[]): DailyMemoryRun {
-    const now = nowISO();
+    const now = this.clock.nowISO();
     const id = genId("dmr");
     this.db
       .prepare(
@@ -487,7 +515,7 @@ export class MemoryService {
       error: string | null;
     }>,
   ): void {
-    const updatedAt = nowISO();
+    const updatedAt = this.clock.nowISO();
     const sets: string[] = ["updated_at = ?"];
     const vals: unknown[] = [updatedAt];
     if (patch.status !== undefined) {

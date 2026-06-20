@@ -31,6 +31,7 @@ import {
 } from "../knowledge/vault.js";
 import { nowISO, runWindow } from "../utils.js";
 import { renderMarkdownCard } from "../lark/cards.js";
+import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 
 const log = logger("cron");
 const SCRIPT_TIMEOUT_MS = 60_000;
@@ -154,8 +155,10 @@ async function runScriptSchedule(
     pushed_message_id: sent.messageId,
   });
   new MessageService(db).saveAssistantMessage({
-    id: sent.messageId,
-    chatId,
+    id: larkMessageId(sent.messageId)!,
+    source: "lark",
+    conversationId: larkChatConversationId(chatId),
+    conversationType: "notification",
     content: message,
     knowledgePath: writeResult.path,
   });

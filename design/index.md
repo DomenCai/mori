@@ -14,11 +14,13 @@
 
 | 日期 | 目录 | 状态 | 内容 |
 |---|---|---|---|
+| 2026-06-20 | [`20260620-input-adapters-and-backfill`](20260620-input-adapters-and-backfill/index.md) | 多入口输入与历史回放设计 | 定义多来源内部 message、完整 scope 与飞书 thread 保留、日记蒸馏核心、模拟时钟，以及历史日记 backfill。 |
 | 2026-06-20 | [`20260620-storyline-memory-redesign`](20260620-storyline-memory-redesign/index.md) | 当前记忆层基线 | 用 `storylines` 取代 `working_items`，新增 `daily_memory`，删除记忆审批，重设 weekly consolidation。 |
 | 2026-06-19 | [`20260619-mvp-to-north-star`](20260619-mvp-to-north-star/index.md) | 北极星蓝图；记忆层部分已被 2026-06-20 修正 | 从 MVP 走向北极星功能的存储、知识库、定时任务、会话 scope，以及旧工作集审批方向。 |
 
 ## 阅读顺序
 
 1. 看当前记忆模型、daily memory、weekly consolidation：先读 [`20260620-storyline-memory-redesign`](20260620-storyline-memory-redesign/index.md)。
-2. 看存储、知识库、脚本投喂、会话 scope：读 [`20260619-mvp-to-north-star`](20260619-mvp-to-north-star/index.md)。
-3. 读到 `working_items` / 工作集审批相关内容时，按历史方案处理；当前实现方向以 `storylines` 为准。
+2. 看历史日记导入、桌面端接入、多入口输入边界：读 [`20260620-input-adapters-and-backfill`](20260620-input-adapters-and-backfill/index.md)。
+3. 看存储、知识库、脚本投喂、会话 scope：读 [`20260619-mvp-to-north-star`](20260619-mvp-to-north-star/index.md)。
+4. 读到 `working_items` / 工作集审批相关内容时，按历史方案处理；当前实现方向以 `storylines` 为准。

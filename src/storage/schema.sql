@@ -1,23 +1,26 @@
--- 基建消息日志：所有可被 reply 的聊天正文都按飞书 message_id 存一份。
+-- 基建消息日志：所有入口进入核心前转换成内部 message。
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
-  chat_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  conversation_type TEXT NOT NULL,
   role TEXT NOT NULL,
   content TEXT NOT NULL,
   reply_to TEXT,
   thread_id TEXT,
   root_id TEXT,
   knowledge_path TEXT,
+  occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
-CREATE INDEX IF NOT EXISTS idx_messages_scope_time ON messages(chat_id, thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_time ON messages(conversation_id, occurred_at);
 
--- 记忆 episode：来源统一为单条消息或 scope 时间窗。
+-- 记忆 episode：来源统一为单条消息或 conversation 时间窗。
 CREATE TABLE IF NOT EXISTS episodes (
   id TEXT PRIMARY KEY,
-  source_scope_id TEXT NOT NULL,
+  source_conversation_id TEXT NOT NULL,
   source_message_id TEXT,
   source_started_at TEXT NOT NULL,
   source_ended_at TEXT NOT NULL,
@@ -27,7 +30,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   digested_run_id TEXT,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_episodes_source_scope ON episodes(source_scope_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_source_conversation ON episodes(source_conversation_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_source_message ON episodes(source_message_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_digested ON episodes(digested_run_id, occurred_at);
 

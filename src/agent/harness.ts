@@ -27,6 +27,8 @@ import { createKnowledgeTools } from "./tools/knowledge.js";
 import { genId, shanghaiFileTimestamp } from "../utils.js";
 import type { SessionPolicyConfig } from "../config.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
+import type { Clock } from "../clock.js";
+import { systemClock } from "../clock.js";
 
 const SESSION_CWD = "personal-agent";
 
@@ -66,6 +68,7 @@ export interface HarnessManagerOptions {
   };
   channel?: LarkChannel;
   registry?: ChatRegistry;
+  clock?: Clock;
 }
 
 export class HarnessManager {
@@ -80,19 +83,21 @@ export class HarnessManager {
   private routes: HarnessManagerOptions["routes"];
   private channel?: LarkChannel;
   private registry?: ChatRegistry;
+  private clock: Clock;
 
   constructor(opts: HarnessManagerOptions) {
     this.db = opts.db;
     this.routes = opts.routes;
+    this.clock = opts.clock ?? systemClock;
     this.env = new NodeExecutionEnv({ cwd: process.cwd() });
     this.repo = new JsonlSessionRepo({
       fs: this.env,
       sessionsRoot: opts.sessionsDir,
     });
     this.installShanghaiSessionFileNames();
-    this.diaryService = new DiaryService(opts.db);
-    this.memoryService = new MemoryService(opts.db);
-    this.messageService = new MessageService(opts.db);
+    this.diaryService = new DiaryService(opts.db, this.clock);
+    this.memoryService = new MemoryService(opts.db, this.clock);
+    this.messageService = new MessageService(opts.db, this.clock);
     this.vaultService = new VaultService();
     this.channel = opts.channel;
     this.registry = opts.registry;
@@ -112,6 +117,10 @@ export class HarnessManager {
 
   getVaultService(): VaultService {
     return this.vaultService;
+  }
+
+  getClock(): Clock {
+    return this.clock;
   }
 
   async getOrCreate(
@@ -170,14 +179,14 @@ export class HarnessManager {
     if (!entry.segmentStartedAt || !entry.segmentEndedAt) return;
 
     const source: EpisodeSource = {
-      scopeId,
+      conversationId: scopeId,
       messageId: null,
       startedAt: entry.segmentStartedAt,
       endedAt: entry.segmentEndedAt,
     };
     if (this.diaryService.hasEpisodeForScopeWindow(source)) return;
 
-    const messages = this.messageService.getScopeMessages(
+    const messages = this.messageService.getConversationMessages(
       scopeId,
       source.startedAt,
       source.endedAt,
@@ -187,7 +196,7 @@ export class HarnessManager {
     const restoreToolNames = [...entry.activeToolNames];
     entry.currentEpisodeSource = source;
     const transcript = messages
-      .map((message) => `[${message.created_at}] ${message.role}: ${message.content}`)
+      .map((message) => `[${message.occurred_at}] ${message.role}: ${message.content}`)
       .join("\n\n");
 
     try {

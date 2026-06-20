@@ -4,6 +4,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dbPath as defaultDbPath } from "../config.js";
 import { EMPTY_PROFILE } from "../memory/service.js";
+import type { Clock } from "../clock.js";
+import { systemClock } from "../clock.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +19,7 @@ export function getDb(path: string = defaultDbPath): Database.Database {
   return _db;
 }
 
-export function initDb(db: Database.Database): void {
+export function initDb(db: Database.Database, clock: Clock = systemClock): void {
   const schema = readSchema();
   db.exec(schema);
 
@@ -27,7 +29,7 @@ export function initDb(db: Database.Database): void {
   if (!profileExists) {
     db.prepare(
       "INSERT INTO profile (id, content, updated_at) VALUES (1, ?, ?)",
-    ).run(EMPTY_PROFILE, new Date().toISOString());
+    ).run(EMPTY_PROFILE, clock.nowISO());
   }
 }
 

@@ -30,6 +30,8 @@ import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
 import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
 import { toggleScheduleEnabled } from "./schedule/config.js";
+import { toIngestedMessage } from "./lark/ingest.js";
+import type { ConversationType } from "./ingest/message.js";
 
 const bootLog = logger("boot");
 const larkLog = logger("lark");
@@ -120,7 +122,10 @@ async function runForeground() {
         return;
       }
 
-      harnessManager.getMessageService().saveUserMessage(msg);
+      const ingested = toIngestedMessage(
+        msg,
+        resolveLarkConversationType(msg, registry),
+      );
 
       // 命令路由
       const { handled } = await handleCommand(msg, cmdCtx);
@@ -143,10 +148,11 @@ async function runForeground() {
       }
 
       if (msg.threadId) {
-        await handleChatMessage(msg, channel, harnessManager, "thread");
+        await handleChatMessage(msg, ingested, channel, harnessManager, "thread");
       } else if (resolvedType === "diary") {
         await handleDiaryMessage(
           msg,
+          ingested,
           channel,
           harnessManager,
           isDiaryEntryMessage(msg) ? "entry" : "reply",
@@ -154,6 +160,7 @@ async function runForeground() {
       } else if (resolvedType === "notification") {
         const handledNotification = await handleNotificationMessage(
           msg,
+          ingested,
           channel,
           harnessManager,
         );
@@ -163,9 +170,9 @@ async function runForeground() {
           });
         }
       } else if (resolvedType === "topic") {
-        await handleChatMessage(msg, channel, harnessManager, "topic");
+        await handleChatMessage(msg, ingested, channel, harnessManager, "topic");
       } else {
-        await handleChatMessage(msg, channel, harnessManager, "dm");
+        await handleChatMessage(msg, ingested, channel, harnessManager, "dm");
       }
     },
     cardAction: async (evt: CardActionEvent) => {
@@ -230,6 +237,17 @@ async function handleScheduleAction(
   }
   await channel.updateCard(evt.messageId, renderSchedulesCard(config));
   return true;
+}
+
+function resolveLarkConversationType(
+  msg: NormalizedMessage,
+  registry: ChatRegistry,
+): ConversationType {
+  if (msg.threadId) return "thread";
+  const registered = registry.getType(msg.chatId);
+  if (registered) return registered;
+  if (msg.chatType === "p2p") return "dm";
+  return "topic";
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────

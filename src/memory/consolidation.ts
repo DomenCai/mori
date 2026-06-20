@@ -2,12 +2,12 @@ import type Database from "better-sqlite3";
 import type { LarkChannel } from "@larksuite/channel";
 import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
-import { DiaryService } from "../diary/service.js";
-import { MemoryService, type StorylineChangeSummary } from "./service.js";
-import { genId, nowISO, summarizeTextDelta, weekKey } from "../utils.js";
+import type { MutableClock } from "../clock.js";
+import { type StorylineChangeSummary } from "./service.js";
+import { genId, shanghaiDateKey, summarizeTextDelta, weekKey } from "../utils.js";
 import { logger } from "../log.js";
 import { renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
-import { MessageService } from "../storage/messages.js";
+import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 
 const log = logger("consolidation");
 const MAX_EPISODE_TRANSCRIPT_CHARS = 2000;
@@ -19,18 +19,62 @@ export async function runConsolidation(
   registry: ChatRegistry,
   since?: string,
 ): Promise<void> {
-  const diaryService = new DiaryService(db);
-  const memoryService = new MemoryService(db);
-
-  const now = new Date();
+  const now = harnessManager.getClock().now();
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() - 7);
   const sinceIso = since ?? weekStart.toISOString();
-  const episodes = diaryService.getEpisodesSince(sinceIso);
-  const dailyRuns = memoryService
-    .getRecentDailyMemoryRuns(14)
-    .filter((run) => run.updated_at >= sinceIso);
-  const storylineChanges = memoryService.getStorylineChangesSince(sinceIso);
+  await runWeeklyConsolidationForWindow({
+    db,
+    harnessManager,
+    channel,
+    registry,
+    since: sinceIso,
+    until: now.toISOString(),
+    sendCards: true,
+    friendRound: true,
+  });
+}
+
+export async function runWeeklyConsolidationForWindow(opts: {
+  db: Database.Database;
+  harnessManager: HarnessManager;
+  since: string;
+  until: string;
+  clock?: MutableClock;
+  channel?: LarkChannel;
+  registry?: ChatRegistry;
+  sendCards: boolean;
+  friendRound: boolean;
+}): Promise<void> {
+  const {
+    db,
+    harnessManager,
+    since,
+    until,
+    clock,
+    channel,
+    registry,
+    sendCards,
+    friendRound,
+  } = opts;
+
+  if (clock) {
+    clock.set(new Date(new Date(until).getTime() - 5 * 60_000));
+  }
+
+  const diaryService = harnessManager.getDiaryService();
+  const memoryService = harnessManager.getMemoryService();
+  const episodes = diaryService.getEpisodesInWindow(since, until);
+  const sinceDateKey = shanghaiDateKey(new Date(since));
+  const untilDateKey = shanghaiDateKey(new Date(until));
+  const dailyRuns = memoryService.getDailyMemoryRunsInDateRange(
+    sinceDateKey,
+    untilDateKey,
+  );
+  const storylineChanges = dedupeStorylineChanges([
+    ...memoryService.getStorylineChangesInWindow(since, until),
+    ...memoryService.getStorylineChangesByRuns(dailyRuns.map((run) => run.id)),
+  ]);
 
   if (episodes.length === 0 && dailyRuns.length === 0 && storylineChanges.length === 0) {
     log.info("本周无 memory 信号，跳过");
@@ -105,9 +149,9 @@ ${memoryService.getProfile()}
     }
   });
 
-  const wk = weekKey(new Date(episodes.at(-1)?.occurred_at as string | undefined ?? now));
-  const diaryChats = registry.getDiaryChats();
-  const messageService = new MessageService(db);
+  const wk = weekKey(new Date(since));
+  const diaryChats = sendCards ? registry?.getDiaryChats() ?? [] : [];
+  const messageService = harnessManager.getMessageService();
   try {
     captured = "";
     await entry.harness.setActiveTools(["update_profile", "search_memory"]);
@@ -121,24 +165,31 @@ ${memoryService.getProfile()}
         delta: summarizeTextDelta(r.old_content, r.new_content),
       }));
 
-    const recordCard = renderWeeklyRecordCard({
-      weekKey: wk,
-      recap: recapText,
-      profileChanges,
-      storylineChanges: compactStorylineChanges(storylineChanges),
-    });
     const recordText = buildWeeklyRecordText(
       recapText,
       profileChanges,
       storylineChanges,
     );
-    for (const chatId of diaryChats) {
-      const sent = await channel.send(chatId, { card: recordCard });
-      messageService.saveAssistantMessage({
-        id: sent.messageId,
-        chatId,
-        content: `本周记录（${wk}）\n\n${recordText}`,
+    if (sendCards) {
+      if (!channel || !registry) {
+        throw new Error("sendCards=true 需要 channel 和 registry");
+      }
+      const recordCard = renderWeeklyRecordCard({
+        weekKey: wk,
+        recap: recapText,
+        profileChanges,
+        storylineChanges: compactStorylineChanges(storylineChanges),
       });
+      for (const chatId of diaryChats) {
+        const sent = await channel.send(chatId, { card: recordCard });
+        messageService.saveAssistantMessage({
+          id: larkMessageId(sent.messageId)!,
+          source: "lark",
+          conversationId: larkChatConversationId(chatId),
+          conversationType: "diary",
+          content: `本周记录（${wk}）\n\n${recordText}`,
+        });
+      }
     }
 
     const saveWeeklySummary = (text: string) =>
@@ -146,7 +197,7 @@ ${memoryService.getProfile()}
         .prepare(
           "INSERT OR REPLACE INTO weekly_summaries (id, week_key, summary, created_at) VALUES (?, ?, ?, ?)",
         )
-        .run(genId("ws"), wk, text, nowISO());
+        .run(genId("ws"), wk, text, harnessManager.getClock().nowISO());
 
     saveWeeklySummary(recordText);
     db.prepare(
@@ -159,33 +210,53 @@ ${memoryService.getProfile()}
       entry.modelId,
       "[]",
       "completed",
-      nowISO(),
+      harnessManager.getClock().nowISO(),
     );
 
-    try {
-      captured = "";
-      await entry.harness.setActiveTools([]);
-      await entry.harness.prompt(friendPrompt);
-      const friendText = captured.trim();
-      if (friendText) {
-        const friendCard = renderWeeklyFriendCard(friendText);
-        for (const chatId of diaryChats) {
-          const sent = await channel.send(chatId, { card: friendCard });
-          messageService.saveAssistantMessage({
-            id: sent.messageId,
-            chatId,
-            content: friendText,
-          });
+    if (friendRound) {
+      try {
+        captured = "";
+        await entry.harness.setActiveTools([]);
+        await entry.harness.prompt(friendPrompt);
+        const friendText = captured.trim();
+        if (friendText) {
+          if (sendCards && channel) {
+            const friendCard = renderWeeklyFriendCard(friendText);
+            for (const chatId of diaryChats) {
+              const sent = await channel.send(chatId, { card: friendCard });
+              messageService.saveAssistantMessage({
+                id: larkMessageId(sent.messageId)!,
+                source: "lark",
+                conversationId: larkChatConversationId(chatId),
+                conversationType: "diary",
+                content: friendText,
+              });
+            }
+          }
+          saveWeeklySummary(`${friendText}\n\n--- 本周记录 ---\n\n${recordText}`);
         }
-        saveWeeklySummary(`${friendText}\n\n--- 本周记录 ---\n\n${recordText}`);
+      } catch (err) {
+        log.warn(`朋友轮失败，已保留本周记录：${err}`);
       }
-    } catch (err) {
-      log.warn(`朋友轮失败，已保留本周记录：${err}`);
     }
   } finally {
     unsubscribe();
     await harnessManager.resetSession(scopeId);
   }
+}
+
+function dedupeStorylineChanges(
+  changes: StorylineChangeSummary[],
+): StorylineChangeSummary[] {
+  const seen = new Set<string>();
+  const result: StorylineChangeSummary[] = [];
+  for (const change of changes) {
+    const key = `${change.id}:${change.operation}:${change.created_at}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(change);
+  }
+  return result;
 }
 
 function buildUserEpisodeTranscript(

@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 export interface SearchResult {
   type: "episode";
   id: string;
-  source_scope_id: string;
+  source_conversation_id: string;
   source_message_id: string | null;
   source_started_at: string;
   source_ended_at: string;
@@ -41,7 +41,7 @@ function searchEpisodesFts(
 ): SearchResult[] {
   return db
     .prepare(
-      `SELECT e.id, e.source_scope_id, e.source_message_id,
+      `SELECT e.id, e.source_conversation_id, e.source_message_id,
               e.source_started_at, e.source_ended_at,
               snippet(episodes_fts, 0, '>>>', '<<<', '...', 40) as snippet,
               e.occurred_at
@@ -62,7 +62,7 @@ function searchEpisodesLike(
   const pattern = `%${query}%`;
   return db
     .prepare(
-      `SELECT id, source_scope_id, source_message_id,
+      `SELECT id, source_conversation_id, source_message_id,
               source_started_at, source_ended_at,
               substr(coalesce(brief,'') || ' ' || analysis_json, max(1, instr(coalesce(brief,'') || ' ' || analysis_json, ?) - 20), 80) as snippet,
               occurred_at
@@ -85,27 +85,13 @@ function readEpisodeEvidence(
     return message?.content;
   }
 
-  const delimiter = row.source_scope_id.indexOf(":");
-  const chatId = delimiter < 0
-    ? row.source_scope_id
-    : row.source_scope_id.slice(0, delimiter);
-  const threadId = delimiter < 0 ? null : row.source_scope_id.slice(delimiter + 1);
-
-  const messages = threadId
-    ? db
-      .prepare(
-        `SELECT role, content FROM messages
-         WHERE chat_id = ? AND thread_id = ? AND created_at BETWEEN ? AND ?
-         ORDER BY created_at ASC`,
-      )
-      .all(chatId, threadId, row.source_started_at, row.source_ended_at)
-    : db
-      .prepare(
-        `SELECT role, content FROM messages
-         WHERE chat_id = ? AND thread_id IS NULL AND created_at BETWEEN ? AND ?
-         ORDER BY created_at ASC`,
-      )
-      .all(chatId, row.source_started_at, row.source_ended_at);
+  const messages = db
+    .prepare(
+      `SELECT role, content FROM messages
+       WHERE conversation_id = ? AND occurred_at BETWEEN ? AND ?
+       ORDER BY occurred_at ASC`,
+    )
+    .all(row.source_conversation_id, row.source_started_at, row.source_ended_at);
 
   const text = (messages as Array<{ role: string; content: string }>)
     .map((message) => `${message.role}: ${message.content}`)

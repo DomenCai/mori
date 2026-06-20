@@ -1,57 +1,69 @@
 import type Database from "better-sqlite3";
-import type { NormalizedMessage } from "@larksuite/channel";
-import { nowISO } from "../utils.js";
+import type { Clock } from "../clock.js";
+import { systemClock } from "../clock.js";
+import type { ConversationType, IngestedMessage, MessageSource } from "../ingest/message.js";
 
 export interface StoredMessage {
   id: string;
-  chat_id: string;
+  source: MessageSource;
+  conversation_id: string;
+  conversation_type: ConversationType;
   role: "user" | "assistant";
   content: string;
   reply_to: string | null;
   thread_id: string | null;
   root_id: string | null;
   knowledge_path: string | null;
+  occurred_at: string;
   created_at: string;
 }
 
 export class MessageService {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database, private clock: Clock = systemClock) {}
 
-  saveUserMessage(msg: NormalizedMessage): void {
+  saveUserMessage(msg: IngestedMessage): void {
     this.save({
-      id: msg.messageId,
-      chatId: msg.chatId,
+      id: msg.id,
+      source: msg.source,
+      conversationId: msg.conversationId,
+      conversationType: msg.conversationType,
       role: "user",
       content: msg.content,
-      replyTo: msg.replyToMessageId ?? null,
+      replyTo: msg.replyTo ?? null,
       threadId: msg.threadId ?? null,
       rootId: msg.rootId ?? null,
-      createdAt: msg.createTime
-        ? new Date(msg.createTime).toISOString()
-        : nowISO(),
+      knowledgePath: msg.knowledgePath ?? null,
+      occurredAt: msg.occurredAt,
+      createdAt: this.clock.nowISO(),
     });
   }
 
   saveAssistantMessage(opts: {
     id: string;
-    chatId: string;
+    source: MessageSource;
+    conversationId: string;
+    conversationType: ConversationType;
     content: string;
     replyTo?: string | null;
     threadId?: string | null;
     rootId?: string | null;
     knowledgePath?: string | null;
+    occurredAt?: string;
     createdAt?: string;
   }): void {
     this.save({
       id: opts.id,
-      chatId: opts.chatId,
+      source: opts.source,
+      conversationId: opts.conversationId,
+      conversationType: opts.conversationType,
       role: "assistant",
       content: opts.content,
       replyTo: opts.replyTo ?? null,
       threadId: opts.threadId ?? null,
       rootId: opts.rootId ?? null,
       knowledgePath: opts.knowledgePath ?? null,
-      createdAt: opts.createdAt ?? nowISO(),
+      occurredAt: opts.occurredAt ?? this.clock.nowISO(),
+      createdAt: opts.createdAt ?? this.clock.nowISO(),
     });
   }
 
@@ -69,95 +81,77 @@ export class MessageService {
     );
   }
 
-  getScopeMessages(
-    scopeId: string,
+  getConversationMessages(
+    conversationId: string,
     startedAt: string,
     endedAt: string,
   ): StoredMessage[] {
-    const { chatId, threadId } = splitScopeId(scopeId);
-    if (threadId) {
-      return this.db
-        .prepare(
-          `SELECT * FROM messages
-           WHERE chat_id = ? AND thread_id = ? AND created_at BETWEEN ? AND ?
-           ORDER BY created_at ASC`,
-        )
-        .all(chatId, threadId, startedAt, endedAt) as StoredMessage[];
-    }
-
     return this.db
       .prepare(
         `SELECT * FROM messages
-         WHERE chat_id = ? AND thread_id IS NULL AND created_at BETWEEN ? AND ?
-         ORDER BY created_at ASC`,
+         WHERE conversation_id = ? AND occurred_at BETWEEN ? AND ?
+         ORDER BY occurred_at ASC`,
       )
-      .all(chatId, startedAt, endedAt) as StoredMessage[];
+      .all(conversationId, startedAt, endedAt) as StoredMessage[];
   }
 
-  getLastUserMessageTime(chatIds: string[]): string | null {
-    if (chatIds.length === 0) return null;
-    const placeholders = chatIds.map(() => "?").join(", ");
+  getLastUserMessageTime(conversationIds: string[]): string | null {
+    if (conversationIds.length === 0) return null;
+    const placeholders = conversationIds.map(() => "?").join(", ");
     const row = this.db
       .prepare(
-        `SELECT created_at FROM messages
-         WHERE role = 'user' AND chat_id IN (${placeholders})
-         ORDER BY created_at DESC LIMIT 1`,
+        `SELECT occurred_at FROM messages
+         WHERE role = 'user' AND source != 'import' AND conversation_id IN (${placeholders})
+         ORDER BY occurred_at DESC LIMIT 1`,
       )
-      .get(...chatIds) as { created_at: string } | undefined;
-    return row?.created_at ?? null;
+      .get(...conversationIds) as { occurred_at: string } | undefined;
+    return row?.occurred_at ?? null;
   }
 
   private save(opts: {
     id: string;
-    chatId: string;
+    source: MessageSource;
+    conversationId: string;
+    conversationType: ConversationType;
     role: "user" | "assistant";
     content: string;
     replyTo?: string | null;
     threadId?: string | null;
     rootId?: string | null;
     knowledgePath?: string | null;
+    occurredAt: string;
     createdAt: string;
   }): void {
     this.db
       .prepare(
-        `INSERT INTO messages (id, chat_id, role, content, reply_to, thread_id, root_id, knowledge_path, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO messages (id, source, conversation_id, conversation_type, role, content, reply_to, thread_id, root_id, knowledge_path, occurred_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           chat_id = excluded.chat_id,
+           source = excluded.source,
+           conversation_id = excluded.conversation_id,
+           conversation_type = excluded.conversation_type,
            role = excluded.role,
            content = excluded.content,
            reply_to = excluded.reply_to,
            thread_id = excluded.thread_id,
            root_id = excluded.root_id,
            knowledge_path = coalesce(excluded.knowledge_path, messages.knowledge_path),
+           occurred_at = excluded.occurred_at,
            created_at = excluded.created_at`,
       )
       .run(
         opts.id,
-        opts.chatId,
+        opts.source,
+        opts.conversationId,
+        opts.conversationType,
         opts.role,
         opts.content,
         opts.replyTo ?? null,
         opts.threadId ?? null,
         opts.rootId ?? null,
         opts.knowledgePath ?? null,
+        opts.occurredAt,
         opts.createdAt,
       );
   }
-}
-
-export function scopeIdForMessage(msg: NormalizedMessage): string {
-  return msg.threadId ? `${msg.chatId}:${msg.threadId}` : msg.chatId;
-}
-
-export function splitScopeId(scopeId: string): {
-  chatId: string;
-  threadId: string | null;
-} {
-  const delimiter = scopeId.indexOf(":");
-  if (delimiter < 0) return { chatId: scopeId, threadId: null };
-  return {
-    chatId: scopeId.slice(0, delimiter),
-    threadId: scopeId.slice(delimiter + 1),
-  };
 }

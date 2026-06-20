@@ -64,6 +64,24 @@ Agent transcript 由 pi-agent-core 的 JSONL session 仓库维护。仓库会按
 
 SQLite（`data/app.db`），schema 在 `src/storage/schema.sql`，启动时 `initDb` 幂等建表。直接用 `sqlite3 data/app.db` 查表调试。
 
+`messages` 是中性输入模型：每条用户/助手消息带 `source`（`lark` / `import`）、`conversation_id`（完整 scope）、`conversation_type`，飞书 thread 的 `thread_id` 原样保留。飞书消息进核心前先经 `src/lark/ingest.ts` 转成 `IngestedMessage`，记忆层只认 `conversation_id + occurred_at`，不关心来源平台。
+
+## 历史日记导入（backfill）
+
+把 `diary-data/*.md` 历史日记灌进一个全新 DB，逐日/逐周回放记忆演化：
+
+```bash
+PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data
+PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --dry-run   # 只解析 Markdown 打印计数，不开 DB
+```
+
+- 走和线上日记一样的蒸馏路径（`distillDiaryEntry`），每个 `### HH:MM` section 一条 message + 一条 episode，写失败落 fallback episode。
+- 默认 `--per-section`（按三级标题拆），`--per-day` 整篇一条、成本更低。
+- 按天用独立 session scope（`import:diary:<date>`）跨天 reset，避免全历史挤进一个 harness session。
+- 用可注入的模拟时钟（`src/clock.ts`）逐日/逐周推进，daily/weekly 写入的时间戳落在历史日期而非导入当天。
+- 不发飞书卡片、不发 nudge、不写 assistant 消息。
+- 要求 fresh DB，记忆表非空直接报错；中途失败删 `data/app.db` 重跑即可。
+
 ## 测试
 
 遵循根 `CLAUDE.md` 的测试纪律：只测主流程、高风险路径、真实 bug 回归、用户可见行为，不为私有 helper 和不可达状态补测试。端到端测试针对完整链路（记日记 → 流式回复 → 写 episode → 周总结）。

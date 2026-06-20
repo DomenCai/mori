@@ -10,12 +10,13 @@ Agent 对每个飞书 scope 维护一个独立对话上下文，并按 `config.j
 
 判断追加还是新建，唯一标准就是这个 scope 的会话条目此刻还在不在内存里。没有别的时间戳比较。
 
-scope key 规则：
+scope key 规则。scope key 就是 `IngestedMessage.conversationId`，是完整 scope，不再靠 `chat_id + thread_id` 现拼：
 
 | 类型 | scope key |
 |---|---|
-| 日记群 / 私聊 / 主题群 | `chatId` |
-| 飞书话题 thread | `chatId:threadId` |
+| 日记群 / 私聊 / 主题群 | `lark:chat:<chat_id>` |
+| 飞书话题 thread | `lark:thread:<chat_id>:<thread_id>` |
+| 历史日记导入 | `import:diary:<date>`（按天一段，跨天 reset，见 [开发指南](development.md)） |
 | 内部任务 | `weekly_consolidation` / `daily_memory_*` / `knowledge_index_*` 等内部 scope |
 
 ## 续聊 vs 新会话
@@ -63,7 +64,7 @@ scope key 规则：
 
 `dm` / `thread` / `topic` 在关闭或 `/new` / `/compact` 前会先尝试把本段 scope 蒸馏成一条 episode：
 
-- episode 来源是 `source_scope_id + source_started_at/source_ended_at`。
+- episode 来源是 `source_conversation_id + source_started_at/source_ended_at`。
 - 只在本段消息里有用户消息时蒸馏。
 - 若 LLM 写 episode 失败，会写一条 fallback episode，避免这段对话完全丢失。
 - 日记群根消息仍按“每篇一条”写 episode，不靠关闭时蒸馏。

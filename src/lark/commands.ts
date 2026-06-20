@@ -2,7 +2,7 @@ import type { LarkChannel, NormalizedMessage } from "@larksuite/channel";
 import type Database from "better-sqlite3";
 import { ChatRegistry } from "./chatRegistry.js";
 import type { HarnessManager } from "../agent/harness.js";
-import { scopeIdForMessage } from "../storage/messages.js";
+import { larkConversationId } from "./ingest.js";
 import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
 import { renderInfoCard, renderProfileHistoryCard } from "./cards.js";
 import type { DailyMemoryRun } from "../memory/service.js";
@@ -129,7 +129,7 @@ async function handleNew(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.harnessManager.resetSession(scopeIdForMessage(msg));
+  await ctx.harnessManager.resetSession(larkConversationId(msg));
   await ctx.channel.send(msg.chatId, { text: "🔄 会话已重置" });
   return { handled: true };
 }
@@ -138,7 +138,7 @@ async function handleCompact(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.harnessManager.compactSession(scopeIdForMessage(msg));
+  await ctx.harnessManager.compactSession(larkConversationId(msg));
   await ctx.channel.send(msg.chatId, { text: "📦 上下文已压缩" });
   return { handled: true };
 }
