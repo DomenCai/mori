@@ -35,6 +35,22 @@ export function shanghaiDateKey(date = new Date()): string {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+export function shanghaiDateStart(dateKey: string): Date {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, -8, 0, 0, 0));
+}
+
+export function shanghaiDateRange(dateKey: string): { startIso: string; endIso: string } {
+  const start = shanghaiDateStart(dateKey);
+  const end = new Date(start.getTime() + 86_400_000);
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+export function previousShanghaiDateKey(date = new Date()): string {
+  const todayStart = shanghaiDateStart(shanghaiDateKey(date));
+  return shanghaiDateKey(new Date(todayStart.getTime() - 1));
+}
+
 export function shanghaiFileTimestamp(date = new Date()): string {
   const parts = shanghaiParts(date);
   const ms = String(date.getMilliseconds()).padStart(3, "0");

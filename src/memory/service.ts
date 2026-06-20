@@ -1,13 +1,89 @@
 import type Database from "better-sqlite3";
 import { genId, nowISO } from "../utils.js";
 import type {
-  CreateWorkingItemData,
-  MergeWorkingItemsData,
+  AdvanceStorylineData,
+  CreateStorylineData,
+  MergeStorylinesData,
+  SetStorylineStatusData,
+  StorylineKind,
+  StorylineStatus,
   UpdateProfileData,
-  UpdateWorkingItemData,
 } from "../agent/schemas.js";
 
 export const EMPTY_PROFILE = "（尚未建立身份画像）";
+export const DORMANT_AFTER_DAYS = 21;
+export const MAX_ACTIVE_STORYLINES = 12;
+
+export interface Storyline {
+  id: string;
+  kind: StorylineKind;
+  title: string;
+  status: StorylineStatus;
+  summary: string;
+  current_tension: string | null;
+  emotional_arc: string | null;
+  people: string[];
+  evidence_episode_ids: string[];
+  created_at: string;
+  updated_at: string;
+  last_active_at: string;
+}
+
+export interface StorylineRevision {
+  id: string;
+  storyline_id: string;
+  operation: string;
+  old_json: string | null;
+  new_json: string;
+  reason: string;
+  source_episode_ids: string[];
+  run_id: string | null;
+  created_at: string;
+}
+
+export interface StorylineChangeSummary {
+  id: string;
+  title: string;
+  operation: string;
+  status: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface DailyMemoryRun {
+  id: string;
+  date_key: string;
+  status: string;
+  input_episode_ids: string[];
+  dream_summary: string | null;
+  storyline_changes: StorylineChangeSummary[];
+  nudge_evaluated: boolean;
+  nudge_sent: boolean;
+  nudge_sent_at: string | null;
+  nudge_text: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+type StorylineRow = Omit<Storyline, "people" | "evidence_episode_ids"> & {
+  people_json: string;
+  evidence_episode_ids_json: string;
+};
+
+type RevisionRow = Omit<StorylineRevision, "source_episode_ids"> & {
+  source_episode_ids_json: string;
+};
+
+type DailyRunRow = Omit<
+  DailyMemoryRun,
+  "input_episode_ids" | "storyline_changes" | "nudge_evaluated" | "nudge_sent"
+> & {
+  input_episode_ids_json: string;
+  storyline_changes_json: string;
+  nudge_evaluated: number;
+  nudge_sent: number;
+};
 
 export class MemoryService {
   constructor(private db: Database.Database) {}
@@ -23,8 +99,6 @@ export class MemoryService {
 
   updateProfile(data: UpdateProfileData, runId?: string): void {
     const stored = this.getProfile();
-    // 占位符不该和正文共存：先剥掉它，old 为真正的画像正文（"" 表示尚无画像）。
-    // 这样即便历史脏数据把占位符 baked 进了正文，下一次编辑也会自动清掉。
     const old = stored.replace(EMPTY_PROFILE, "").trim();
     let newContent: string;
 
@@ -34,21 +108,23 @@ export class MemoryService {
         break;
       case "replace": {
         if (!data.old_text) throw new Error("replace 需要 old_text");
-        if (!old.includes(data.old_text))
+        if (!old.includes(data.old_text)) {
           throw new Error(`画像中未找到子串: "${data.old_text}"`);
+        }
         newContent = old.replace(data.old_text, data.new_text ?? "");
         break;
       }
       case "remove": {
         if (!data.old_text) throw new Error("remove 需要 old_text");
-        if (!old.includes(data.old_text))
+        if (!old.includes(data.old_text)) {
           throw new Error(`画像中未找到子串: "${data.old_text}"`);
+        }
         newContent = old.replace(data.old_text, "").trim();
         break;
       }
     }
 
-    const finalContent = newContent!.trim() || EMPTY_PROFILE; // 删空了回到占位符
+    const finalContent = newContent!.trim() || EMPTY_PROFILE;
     const now = nowISO();
     this.db.prepare("UPDATE profile SET content = ?, updated_at = ? WHERE id = 1").run(finalContent, now);
 
@@ -82,165 +158,556 @@ export class MemoryService {
     }>;
   }
 
-  // 周合并里静默 finalize 的工作集变更没有审批卡，靠 updated_at 落在本轮窗口内捞出来，回灌进周总结卡片。
-  getWorkingItemsTouchedSince(
-    sinceIso: string,
-  ): Array<{ name: string; type: string; status: string; isNew: boolean }> {
+  // ── Storylines ──
+
+  getActiveStorylines(): Storyline[] {
+    return this.queryStorylines(
+      "SELECT * FROM storylines WHERE status = 'active' ORDER BY last_active_at DESC",
+    );
+  }
+
+  getRecentDormantStorylines(limit = 5): Storyline[] {
+    return this.queryStorylines(
+      "SELECT * FROM storylines WHERE status = 'dormant' ORDER BY last_active_at DESC LIMIT ?",
+      [limit],
+    );
+  }
+
+  getVisibleStorylines(): Storyline[] {
+    return [
+      ...this.getActiveStorylines(),
+      ...this.getRecentDormantStorylines(),
+    ];
+  }
+
+  getAllStorylines(): Storyline[] {
+    return this.queryStorylines(
+      "SELECT * FROM storylines ORDER BY status = 'active' DESC, last_active_at DESC",
+    );
+  }
+
+  getStoryline(id: string): Storyline | null {
+    const row = this.db
+      .prepare("SELECT * FROM storylines WHERE id = ?")
+      .get(id) as StorylineRow | undefined;
+    return row ? parseStoryline(row) : null;
+  }
+
+  getStorylineRevisions(id: string): StorylineRevision[] {
+    return this.queryRevisions(
+      `SELECT * FROM storyline_revisions
+       WHERE storyline_id = ?
+       ORDER BY created_at DESC
+       LIMIT 20`,
+      [id],
+    );
+  }
+
+  getStorylineRevisionsByRun(runId: string): StorylineRevision[] {
+    return this.queryRevisions(
+      `SELECT * FROM storyline_revisions
+       WHERE run_id = ?
+       ORDER BY created_at ASC`,
+      [runId],
+    );
+  }
+
+  getStorylineChangesSince(sinceIso: string): StorylineChangeSummary[] {
     const rows = this.db
       .prepare(
-        "SELECT name, type, status, created_at, updated_at FROM working_items WHERE updated_at >= ? ORDER BY updated_at ASC",
+        `SELECT r.operation, r.reason, r.created_at, s.id, s.title, s.status
+         FROM storyline_revisions r
+         JOIN storylines s ON s.id = r.storyline_id
+         WHERE r.created_at >= ?
+         ORDER BY r.created_at ASC`,
       )
-      .all(sinceIso) as Array<{
-      name: string;
-      type: string;
-      status: string;
-      created_at: string;
-      updated_at: string;
-    }>;
-    return rows.map((r) => ({
-      name: r.name,
-      type: r.type,
-      status: r.status,
-      isNew: r.created_at >= sinceIso,
-    }));
+      .all(sinceIso) as Array<StorylineChangeSummary>;
+    return rows;
   }
 
-  // ── Working Items ──
-
-  getActiveWorkingItems(): Array<Record<string, any>> {
-    return this.db
-      .prepare(
-        "SELECT * FROM working_items WHERE status = 'active' ORDER BY updated_at DESC",
-      )
-      .all() as any;
-  }
-
-  getAllWorkingItems(): Array<Record<string, any>> {
-    return this.db
-      .prepare("SELECT * FROM working_items ORDER BY updated_at DESC")
-      .all() as any;
-  }
-
-  createWorkingItem(data: CreateWorkingItemData, sourceIds: string[] = []): string {
-    const now = nowISO();
-    const duplicate = this.findDuplicateWorkingItem(data.type, data.name);
+  createStoryline(data: CreateStorylineData, runId?: string): string {
+    const duplicate = this.findDuplicateStoryline(data.kind, data.title);
     if (duplicate) {
       throw new Error(
-        `已存在同名 ${data.type} 工作集：${duplicate.id} ${duplicate.name}，请改用 update_working_item`,
+        `已存在相近 ${data.kind} storyline：${duplicate.id} ${duplicate.title}，请改用 advance_storyline`,
       );
     }
 
-    const id = genId("wi");
-    this.db
-      .prepare(
-        `INSERT INTO working_items (id, type, name, status, thesis, current_questions_json, decisions_json, next_steps_json, related_people_json, source_ids_json, created_at, updated_at, last_mentioned_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        data.type,
-        data.name,
-        data.status,
-        data.thesis ?? null,
-        JSON.stringify(data.current_questions ?? []),
-        JSON.stringify(data.decisions ?? []),
-        JSON.stringify(data.next_steps ?? []),
-        JSON.stringify(data.related_people ?? []),
-        JSON.stringify(sourceIds),
-        now,
-        now,
-        now,
-      );
+    const now = nowISO();
+    const id = genId("sl");
+    const storyline: Storyline = {
+      id,
+      kind: data.kind,
+      title: data.title,
+      status: "active",
+      summary: data.summary,
+      current_tension: data.current_tension ?? null,
+      emotional_arc: data.emotional_arc ?? null,
+      people: data.people ?? [],
+      evidence_episode_ids: unique(data.source_episode_ids),
+      created_at: now,
+      updated_at: now,
+      last_active_at: now,
+    };
+
+    this.insertStoryline(storyline);
+    this.insertRevision({
+      storylineId: id,
+      operation: "create",
+      oldJson: null,
+      newStoryline: storyline,
+      reason: data.reason,
+      sourceEpisodeIds: data.source_episode_ids,
+      runId,
+      now,
+    });
     return id;
   }
 
-  updateWorkingItem(data: UpdateWorkingItemData, sourceIds: string[] = []): string {
-    const existing = this.getWorkingItem(data.id);
-    if (!existing) {
-      throw new Error(`工作集不存在：${data.id}`);
-    }
-
-    this.applyWorkingItemUpdate(data.id, data, sourceIds);
+  advanceStoryline(data: AdvanceStorylineData, runId?: string): string {
+    const existing = this.requireStoryline(data.id);
+    const now = nowISO();
+    const next: Storyline = {
+      ...existing,
+      status: "active",
+      summary: data.summary ?? existing.summary,
+      current_tension: data.current_tension ?? existing.current_tension,
+      emotional_arc: data.emotional_arc ?? existing.emotional_arc,
+      people: data.people ?? existing.people,
+      evidence_episode_ids: unique([
+        ...existing.evidence_episode_ids,
+        ...data.source_episode_ids,
+      ]),
+      updated_at: now,
+      last_active_at: now,
+    };
+    this.updateStoryline(next);
+    this.insertRevision({
+      storylineId: data.id,
+      operation: "advance",
+      oldJson: existing,
+      newStoryline: next,
+      reason: data.reason,
+      sourceEpisodeIds: data.source_episode_ids,
+      runId,
+      now,
+    });
     return data.id;
   }
 
-  mergeWorkingItems(data: MergeWorkingItemsData, sourceIds: string[] = []): string {
+  setStorylineStatus(data: SetStorylineStatusData, runId?: string): string {
+    const existing = this.requireStoryline(data.id);
+    const now = nowISO();
+    const next: Storyline = {
+      ...existing,
+      status: data.status,
+      updated_at: now,
+      last_active_at: data.status === "active" ? now : existing.last_active_at,
+    };
+    this.updateStoryline(next);
+    this.insertRevision({
+      storylineId: data.id,
+      operation: "set_status",
+      oldJson: existing,
+      newStoryline: next,
+      reason: data.reason,
+      sourceEpisodeIds: data.source_episode_ids ?? [],
+      runId,
+      now,
+    });
+    return data.id;
+  }
+
+  mergeStorylines(data: MergeStorylinesData, runId?: string): string {
     if (data.merge_ids.includes(data.keep_id)) {
       throw new Error("merge_ids 不能包含 keep_id");
     }
 
-    const keep = this.getWorkingItem(data.keep_id);
-    if (!keep) throw new Error(`保留工作集不存在：${data.keep_id}`);
-
-    const missing = data.merge_ids.filter((id) => !this.getWorkingItem(id));
-    if (missing.length > 0) {
-      throw new Error(`待合并工作集不存在：${missing.join(", ")}`);
-    }
-
+    const now = nowISO();
     const tx = this.db.transaction(() => {
-      this.applyWorkingItemUpdate(data.keep_id, data, sourceIds);
-      const now = nowISO();
-      const mergedStatus = data.merged_item_status ?? "dropped";
-      for (const id of data.merge_ids) {
-        this.db
-          .prepare(
-            "UPDATE working_items SET status = ?, updated_at = ?, last_mentioned_at = ? WHERE id = ?",
-          )
-          .run(mergedStatus, now, now, id);
+      const keep = this.requireStoryline(data.keep_id);
+      const merged = data.merge_ids.map((id) => this.requireStoryline(id));
+      const nextKeep: Storyline = {
+        ...keep,
+        status: "active",
+        summary: data.summary,
+        current_tension: data.current_tension ?? keep.current_tension,
+        emotional_arc: data.emotional_arc ?? keep.emotional_arc,
+        people: data.people ?? unique([
+          ...keep.people,
+          ...merged.flatMap((item) => item.people),
+        ]),
+        evidence_episode_ids: unique([
+          ...keep.evidence_episode_ids,
+          ...merged.flatMap((item) => item.evidence_episode_ids),
+          ...data.source_episode_ids,
+        ]),
+        updated_at: now,
+        last_active_at: now,
+      };
+      this.updateStoryline(nextKeep);
+      this.insertRevision({
+        storylineId: data.keep_id,
+        operation: "merge",
+        oldJson: keep,
+        newStoryline: nextKeep,
+        reason: data.reason,
+        sourceEpisodeIds: data.source_episode_ids,
+        runId,
+        now,
+      });
+
+      for (const item of merged) {
+        const nextMerged: Storyline = {
+          ...item,
+          status: "closed",
+          updated_at: now,
+        };
+        this.updateStoryline(nextMerged);
+        this.insertRevision({
+          storylineId: item.id,
+          operation: "merged_into",
+          oldJson: item,
+          newStoryline: nextMerged,
+          reason: `${data.reason}; merged_into=${data.keep_id}`,
+          sourceEpisodeIds: data.source_episode_ids,
+          runId,
+          now,
+        });
       }
     });
     tx();
     return data.keep_id;
   }
 
-  getWorkingItem(id: string): Record<string, any> | null {
-    return (
-      (this.db
-        .prepare("SELECT * FROM working_items WHERE id = ?")
-        .get(id) as Record<string, any> | undefined) ?? null
-    );
+  decayStorylines(opts: {
+    runId?: string;
+    activeEpisodeIds?: string[];
+    now?: Date;
+  } = {}): StorylineChangeSummary[] {
+    const nowDate = opts.now ?? new Date();
+    const now = nowDate.toISOString();
+    const threshold = new Date(
+      nowDate.getTime() - DORMANT_AFTER_DAYS * 86_400_000,
+    ).toISOString();
+    const activeEpisodeIds = new Set(opts.activeEpisodeIds ?? []);
+    const changes: StorylineChangeSummary[] = [];
+
+    const tx = this.db.transaction(() => {
+      const expired = this.queryStorylines(
+        `SELECT * FROM storylines
+         WHERE status = 'active' AND last_active_at < ?
+         ORDER BY last_active_at ASC`,
+        [threshold],
+      );
+      for (const item of expired) {
+        changes.push(this.markDormantByDecay(item, "mechanical_decay", opts.runId, now));
+      }
+
+      let active = this.getActiveStorylines().sort((a, b) =>
+        a.last_active_at.localeCompare(b.last_active_at),
+      );
+      while (active.length > MAX_ACTIVE_STORYLINES) {
+        const candidate = active.find(
+          (item) => !item.evidence_episode_ids.some((id) => activeEpisodeIds.has(id)),
+        );
+        if (!candidate) break;
+        changes.push(this.markDormantByDecay(candidate, "mechanical_decay", opts.runId, now));
+        active = this.getActiveStorylines().sort((a, b) =>
+          a.last_active_at.localeCompare(b.last_active_at),
+        );
+      }
+    });
+    tx();
+    return changes;
   }
 
-  private applyWorkingItemUpdate(
-    id: string,
-    data: UpdateWorkingItemData | MergeWorkingItemsData,
-    sourceIds: string[] = [],
-  ): void {
+  // ── Daily Memory Runs ──
+
+  getDailyMemoryRun(dateKey: string): DailyMemoryRun | null {
+    const row = this.db
+      .prepare("SELECT * FROM daily_memory_runs WHERE date_key = ?")
+      .get(dateKey) as DailyRunRow | undefined;
+    return row ? parseDailyRun(row) : null;
+  }
+
+  getRecentDailyMemoryRuns(limit = 7): DailyMemoryRun[] {
+    const rows = this.db
+      .prepare("SELECT * FROM daily_memory_runs ORDER BY date_key DESC LIMIT ?")
+      .all(limit) as DailyRunRow[];
+    return rows.map(parseDailyRun);
+  }
+
+  getLatestCompletedDailyMemoryRun(): DailyMemoryRun | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM daily_memory_runs
+         WHERE status = 'completed'
+         ORDER BY date_key DESC
+         LIMIT 1`,
+      )
+      .get() as DailyRunRow | undefined;
+    return row ? parseDailyRun(row) : null;
+  }
+
+  getLastNudgeSentRun(): DailyMemoryRun | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM daily_memory_runs
+         WHERE nudge_sent = 1
+         ORDER BY nudge_sent_at DESC
+         LIMIT 1`,
+      )
+      .get() as DailyRunRow | undefined;
+    return row ? parseDailyRun(row) : null;
+  }
+
+  createDailyMemoryRun(dateKey: string, inputEpisodeIds: string[]): DailyMemoryRun {
     const now = nowISO();
-    const sets: string[] = [];
-    const vals: any[] = [];
-    sets.push("name = ?"); vals.push(data.name);
-    sets.push("type = ?"); vals.push(data.type);
-    sets.push("status = ?"); vals.push(data.status);
-    sets.push("updated_at = ?"); vals.push(now);
-    sets.push("last_mentioned_at = ?"); vals.push(now);
-
-    if (data.thesis !== undefined) { sets.push("thesis = ?"); vals.push(data.thesis); }
-    if (data.current_questions) { sets.push("current_questions_json = ?"); vals.push(JSON.stringify(data.current_questions)); }
-    if (data.decisions) { sets.push("decisions_json = ?"); vals.push(JSON.stringify(data.decisions)); }
-    if (data.next_steps) { sets.push("next_steps_json = ?"); vals.push(JSON.stringify(data.next_steps)); }
-    if (data.related_people) { sets.push("related_people_json = ?"); vals.push(JSON.stringify(data.related_people)); }
-    if (sourceIds.length) { sets.push("source_ids_json = ?"); vals.push(JSON.stringify(sourceIds)); }
-
-    vals.push(id);
-    this.db.prepare(`UPDATE working_items SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+    const id = genId("dmr");
+    this.db
+      .prepare(
+        `INSERT INTO daily_memory_runs (id, date_key, status, input_episode_ids_json, created_at, updated_at)
+         VALUES (?, ?, 'running', ?, ?, ?)`,
+      )
+      .run(id, dateKey, JSON.stringify(inputEpisodeIds), now, now);
+    return this.getDailyMemoryRun(dateKey)!;
   }
 
-  private findDuplicateWorkingItem(
-    type: string,
-    name: string,
-  ): { id: string; name: string } | null {
-    const normalized = normalizeWorkingItemName(name);
+  updateDailyMemoryRun(
+    id: string,
+    patch: Partial<{
+      status: string;
+      dream_summary: string | null;
+      storyline_changes: StorylineChangeSummary[];
+      nudge_evaluated: boolean;
+      nudge_sent: boolean;
+      nudge_sent_at: string | null;
+      nudge_text: string | null;
+      error: string | null;
+    }>,
+  ): void {
+    const updatedAt = nowISO();
+    const sets: string[] = ["updated_at = ?"];
+    const vals: unknown[] = [updatedAt];
+    if (patch.status !== undefined) {
+      sets.push("status = ?");
+      vals.push(patch.status);
+    }
+    if (patch.dream_summary !== undefined) {
+      sets.push("dream_summary = ?");
+      vals.push(patch.dream_summary);
+    }
+    if (patch.storyline_changes !== undefined) {
+      sets.push("storyline_changes_json = ?");
+      vals.push(JSON.stringify(patch.storyline_changes));
+    }
+    if (patch.nudge_evaluated !== undefined) {
+      sets.push("nudge_evaluated = ?");
+      vals.push(patch.nudge_evaluated ? 1 : 0);
+    }
+    if (patch.nudge_sent !== undefined) {
+      sets.push("nudge_sent = ?");
+      vals.push(patch.nudge_sent ? 1 : 0);
+      if (patch.nudge_sent) {
+        sets.push("nudge_sent_at = coalesce(nudge_sent_at, ?)");
+        vals.push(patch.nudge_sent_at ?? updatedAt);
+      }
+    }
+    if (patch.nudge_sent_at !== undefined && !patch.nudge_sent) {
+      sets.push("nudge_sent_at = ?");
+      vals.push(patch.nudge_sent_at);
+    }
+    if (patch.nudge_text !== undefined) {
+      sets.push("nudge_text = ?");
+      vals.push(patch.nudge_text);
+    }
+    if (patch.error !== undefined) {
+      sets.push("error = ?");
+      vals.push(patch.error);
+    }
+    vals.push(id);
+    this.db.prepare(`UPDATE daily_memory_runs SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+  }
+
+  private queryStorylines(sql: string, params: unknown[] = []): Storyline[] {
+    return (this.db.prepare(sql).all(...params) as StorylineRow[]).map(parseStoryline);
+  }
+
+  private queryRevisions(sql: string, params: unknown[] = []): StorylineRevision[] {
+    return (this.db.prepare(sql).all(...params) as RevisionRow[]).map(parseRevision);
+  }
+
+  private requireStoryline(id: string): Storyline {
+    const item = this.getStoryline(id);
+    if (!item) throw new Error(`storyline 不存在：${id}`);
+    return item;
+  }
+
+  private insertStoryline(item: Storyline): void {
+    this.db
+      .prepare(
+        `INSERT INTO storylines (id, kind, title, status, summary, current_tension, emotional_arc, people_json, evidence_episode_ids_json, created_at, updated_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        item.id,
+        item.kind,
+        item.title,
+        item.status,
+        item.summary,
+        item.current_tension,
+        item.emotional_arc,
+        JSON.stringify(item.people),
+        JSON.stringify(item.evidence_episode_ids),
+        item.created_at,
+        item.updated_at,
+        item.last_active_at,
+      );
+  }
+
+  private updateStoryline(item: Storyline): void {
+    this.db
+      .prepare(
+        `UPDATE storylines
+         SET status = ?, summary = ?, current_tension = ?, emotional_arc = ?,
+             people_json = ?, evidence_episode_ids_json = ?,
+             updated_at = ?, last_active_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        item.status,
+        item.summary,
+        item.current_tension,
+        item.emotional_arc,
+        JSON.stringify(item.people),
+        JSON.stringify(item.evidence_episode_ids),
+        item.updated_at,
+        item.last_active_at,
+        item.id,
+      );
+  }
+
+  private insertRevision(opts: {
+    storylineId: string;
+    operation: string;
+    oldJson: Storyline | null;
+    newStoryline: Storyline;
+    reason: string;
+    sourceEpisodeIds: string[];
+    runId?: string;
+    now: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO storyline_revisions (id, storyline_id, operation, old_json, new_json, reason, source_episode_ids_json, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        genId("sr"),
+        opts.storylineId,
+        opts.operation,
+        opts.oldJson ? JSON.stringify(opts.oldJson) : null,
+        JSON.stringify(opts.newStoryline),
+        opts.reason,
+        JSON.stringify(unique(opts.sourceEpisodeIds)),
+        opts.runId ?? null,
+        opts.now,
+      );
+  }
+
+  private markDormantByDecay(
+    item: Storyline,
+    reason: string,
+    runId: string | undefined,
+    now: string,
+  ): StorylineChangeSummary {
+    const next: Storyline = {
+      ...item,
+      status: "dormant",
+      updated_at: now,
+    };
+    this.updateStoryline(next);
+    this.insertRevision({
+      storylineId: item.id,
+      operation: "decay",
+      oldJson: item,
+      newStoryline: next,
+      reason,
+      sourceEpisodeIds: [],
+      runId,
+      now,
+    });
+    return {
+      id: item.id,
+      title: item.title,
+      operation: "decay",
+      status: "dormant",
+      reason,
+      created_at: now,
+    };
+  }
+
+  private findDuplicateStoryline(
+    kind: StorylineKind,
+    title: string,
+  ): { id: string; title: string } | null {
+    const normalized = normalizeTitle(title);
     const rows = this.db
       .prepare(
-        `SELECT id, name FROM working_items
-         WHERE type = ? AND status IN ('active', 'dormant')`,
+        `SELECT id, title FROM storylines
+         WHERE kind = ? AND status IN ('active', 'dormant')`,
       )
-      .all(type) as Array<{ id: string; name: string }>;
-    return rows.find((row) => normalizeWorkingItemName(row.name) === normalized) ?? null;
+      .all(kind) as Array<{ id: string; title: string }>;
+    return rows.find((row) => normalizeTitle(row.title) === normalized) ?? null;
   }
 }
 
-function normalizeWorkingItemName(name: string): string {
-  return name.trim().toLowerCase();
+function parseStoryline(row: StorylineRow): Storyline {
+  const { people_json, evidence_episode_ids_json, ...rest } = row;
+  return {
+    ...rest,
+    kind: row.kind as StorylineKind,
+    status: row.status as StorylineStatus,
+    people: parseJsonArray(people_json),
+    evidence_episode_ids: parseJsonArray(evidence_episode_ids_json),
+  };
+}
+
+function parseRevision(row: RevisionRow): StorylineRevision {
+  const { source_episode_ids_json, ...rest } = row;
+  return {
+    ...rest,
+    source_episode_ids: parseJsonArray(source_episode_ids_json),
+  };
+}
+
+function parseDailyRun(row: DailyRunRow): DailyMemoryRun {
+  const {
+    input_episode_ids_json,
+    storyline_changes_json,
+    nudge_evaluated,
+    nudge_sent,
+    ...rest
+  } = row;
+  return {
+    ...rest,
+    input_episode_ids: parseJsonArray(input_episode_ids_json),
+    storyline_changes: parseJsonArray(storyline_changes_json),
+    nudge_evaluated: nudge_evaluated === 1,
+    nudge_sent: nudge_sent === 1,
+  };
+}
+
+function parseJsonArray(value: string): any[] {
+  const parsed = JSON.parse(value || "[]");
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function unique<T>(items: T[]): T[] {
+  return Array.from(new Set(items.filter((item) => item !== null && item !== undefined)));
+}
+
+function normalizeTitle(value: string): string {
+  return value.trim().toLowerCase();
 }

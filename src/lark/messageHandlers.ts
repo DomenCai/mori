@@ -7,7 +7,7 @@ import type {
 import { HarnessManager, type HarnessEntry } from "../agent/harness.js";
 import type { DiaryService, EpisodeSource } from "../diary/service.js";
 import { scopeIdForMessage } from "../storage/messages.js";
-import { createAgentCardState, renderAgentCard, renderApprovalCard } from "./cards.js";
+import { createAgentCardState, renderAgentCard } from "./cards.js";
 import {
   appendCardText,
   startCardTool,
@@ -25,14 +25,10 @@ const diaryLog = logger("diary");
 
 const DIARY_ENTRY_TOOL_NAMES = [
   "write_episode",
-  "create_working_item",
-  "update_working_item",
-  "search_diary",
+  "search_memory",
 ];
 const DIARY_REPLY_TOOL_NAMES = [
-  "search_diary",
-  "create_working_item",
-  "update_working_item",
+  "search_memory",
 ];
 
 export function isDiaryEntryMessage(msg: NormalizedMessage): boolean {
@@ -99,12 +95,6 @@ export async function handleDiaryMessage(
             }
             if (event.type === "tool_execution_end") {
               finishCardTool(cardState, event);
-              await maybeSendApprovalCard(
-                event.result,
-                channel,
-                msg.chatId,
-                harnessManager,
-              );
               await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
             }
             if (event.type === "turn_end") {
@@ -228,12 +218,6 @@ export async function handleChatMessage(
             }
             if (event.type === "tool_execution_end") {
               finishCardTool(cardState, event);
-              await maybeSendApprovalCard(
-                event.result,
-                channel,
-                msg.chatId,
-                harnessManager,
-              );
               await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
             }
             if (event.type === "turn_end") {
@@ -430,39 +414,6 @@ async function promoteKnowledgeIfNeeded(
   });
   messageService.updateKnowledgePath(parent.id, nextPath);
   return nextPath;
-}
-
-async function maybeSendApprovalCard(
-  result: unknown,
-  channel: LarkChannel,
-  chatId: string,
-  harnessManager: HarnessManager,
-): Promise<void> {
-  const approvalId = extractApprovalId(result);
-  if (!approvalId) return;
-
-  const approvalService = harnessManager.getApprovalService();
-  const approval = approvalService.get(approvalId);
-  if (!approval) return;
-  const payload = approvalService.parsePayload(approval);
-  const sent = await channel.send(chatId, {
-    card: renderApprovalCard(approvalId, payload),
-  });
-  approvalService.attachMessage(approvalId, chatId, sent.messageId);
-  harnessManager.getMessageService().saveAssistantMessage({
-    id: sent.messageId,
-    chatId,
-    content: `工作集变更审批：${approvalId}`,
-    replyTo: null,
-  });
-}
-
-function extractApprovalId(result: unknown): string | null {
-  if (!result || typeof result !== "object") return null;
-  const details = (result as { details?: unknown }).details;
-  if (!details || typeof details !== "object") return null;
-  const approvalId = (details as { approvalId?: unknown }).approvalId;
-  return typeof approvalId === "string" ? approvalId : null;
 }
 
 function replyOptions(msg: NormalizedMessage): SendOptions {

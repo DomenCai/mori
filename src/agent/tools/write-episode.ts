@@ -14,7 +14,7 @@ export function createWriteEpisodeTool(
       "observations 要主动覆盖这些维度（别只记表面事实）：客观事实(fact)、情绪及其触发(emotion)、" +
       "判断与立场(judgment)、兴趣与偏好(interest/preference)、自我盲点与回避(blind_spot)、" +
       "反复出现像稳定特质的信号(trait_signal)、未闭环的事(open_loop)。每条都要带原文 evidence。" +
-      "正在推进的项目/行动写进工作集，不要塞进 observations。",
+      "episode 只做证据层；跨 episode 的持续叙事由 daily_memory 维护进 storylines。",
     parameters: EpisodeParams,
     execute: async (_id, params) => {
       const source = getCurrentEpisodeSource();

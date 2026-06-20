@@ -18,8 +18,8 @@ export class DiaryService {
     const now = nowISO();
     this.db
       .prepare(
-        `INSERT INTO episodes (id, source_scope_id, source_message_id, source_started_at, source_ended_at, brief, analysis_json, importance, occurred_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO episodes (id, source_scope_id, source_message_id, source_started_at, source_ended_at, brief, analysis_json, occurred_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -29,7 +29,6 @@ export class DiaryService {
         source.endedAt,
         data.brief,
         JSON.stringify({ observations: data.observations }),
-        5,
         source.endedAt,
         now,
       );

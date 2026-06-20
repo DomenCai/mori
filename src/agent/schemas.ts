@@ -20,52 +20,70 @@ export const EpisodeParams = Type.Object({
 });
 export type EpisodeData = Static<typeof EpisodeParams>;
 
-export const WorkingItemFields = {
-  type: Type.Union([Type.Literal("project"), Type.Literal("open_loop")]),
-  name: Type.String(),
-  status: Type.Union([
-    Type.Literal("active"),
-    Type.Literal("dormant"),
-    Type.Literal("done"),
-    Type.Literal("dropped"),
-  ]),
-  thesis: Type.Optional(Type.String()),
-  current_questions: Type.Optional(Type.Array(Type.String())),
-  decisions: Type.Optional(Type.Array(Type.String())),
-  next_steps: Type.Optional(Type.Array(Type.String())),
-  related_people: Type.Optional(Type.Array(Type.String())),
-};
+export const StorylineKindParams = Type.Union([
+  Type.Literal("project"),
+  Type.Literal("relationship"),
+  Type.Literal("emotional_arc"),
+  Type.Literal("interest"),
+  Type.Literal("identity_shift"),
+  Type.Literal("open_loop"),
+]);
+export type StorylineKind = Static<typeof StorylineKindParams>;
 
-export const CreateWorkingItemParams = Type.Object(WorkingItemFields);
-export type CreateWorkingItemData = Static<typeof CreateWorkingItemParams>;
+export const StorylineStatusParams = Type.Union([
+  Type.Literal("active"),
+  Type.Literal("dormant"),
+  Type.Literal("closed"),
+]);
+export type StorylineStatus = Static<typeof StorylineStatusParams>;
 
-export const UpdateWorkingItemParams = Type.Object({
-  id: Type.String({ description: "要更新的工作集 ID，必须来自当前工作集 snapshot 或工具返回" }),
-  ...WorkingItemFields,
+export const CreateStorylineParams = Type.Object({
+  kind: StorylineKindParams,
+  title: Type.String({ description: "稳定标题，不要写成当天日记标题" }),
+  summary: Type.String({ description: "这条叙事线当前说明什么" }),
+  current_tension: Type.Optional(Type.String({ description: "当前张力、悬念或开放问题" })),
+  emotional_arc: Type.Optional(Type.String({ description: "态度或情绪如何连续变化" })),
+  people: Type.Optional(Type.Array(Type.String())),
+  source_episode_ids: Type.Array(Type.String(), { description: "支撑这次新建的 episode IDs" }),
+  reason: Type.String({ description: "为什么需要新建而不是延续已有线" }),
 });
-export type UpdateWorkingItemData = Static<typeof UpdateWorkingItemParams>;
+export type CreateStorylineData = Static<typeof CreateStorylineParams>;
 
-export const MergeWorkingItemsParams = Type.Object({
-  keep_id: Type.String({ description: "保留的工作集 ID" }),
-  merge_ids: Type.Array(Type.String(), { description: "合并进 keep_id 的其它工作集 ID" }),
-  name: Type.String(),
-  type: Type.Union([Type.Literal("project"), Type.Literal("open_loop")]),
-  status: Type.Union([
-    Type.Literal("active"),
-    Type.Literal("dormant"),
-    Type.Literal("done"),
-    Type.Literal("dropped"),
-  ]),
-  thesis: Type.Optional(Type.String()),
-  current_questions: Type.Optional(Type.Array(Type.String())),
-  decisions: Type.Optional(Type.Array(Type.String())),
-  next_steps: Type.Optional(Type.Array(Type.String())),
-  related_people: Type.Optional(Type.Array(Type.String())),
-  merged_item_status: Type.Optional(
-    Type.Union([Type.Literal("dropped"), Type.Literal("dormant")]),
-  ),
+export const AdvanceStorylineParams = Type.Object({
+  id: Type.String({ description: "要推进的 storyline ID，必须来自当前 snapshot 或工具返回" }),
+  summary: Type.Optional(Type.String({ description: "增量压缩后的主线摘要" })),
+  current_tension: Type.Optional(Type.String({ description: "新的当前张力或悬念" })),
+  emotional_arc: Type.Optional(Type.String({ description: "新的连续情绪/态度变化" })),
+  people: Type.Optional(Type.Array(Type.String())),
+  source_episode_ids: Type.Array(Type.String(), { description: "支撑这次推进的 episode IDs" }),
+  reason: Type.String({ description: "为什么这些证据推进了这条线" }),
 });
-export type MergeWorkingItemsData = Static<typeof MergeWorkingItemsParams>;
+export type AdvanceStorylineData = Static<typeof AdvanceStorylineParams>;
+
+export const SetStorylineStatusParams = Type.Object({
+  id: Type.String({ description: "要改状态的 storyline ID" }),
+  status: StorylineStatusParams,
+  source_episode_ids: Type.Optional(Type.Array(Type.String())),
+  reason: Type.String({ description: "状态变化原因" }),
+});
+export type SetStorylineStatusData = Static<typeof SetStorylineStatusParams>;
+
+export const MergeStorylinesParams = Type.Object({
+  keep_id: Type.String({ description: "保留的 storyline ID" }),
+  merge_ids: Type.Array(Type.String(), { description: "合并进 keep_id 的其它 storyline ID" }),
+  summary: Type.String({ description: "合并后的压缩摘要" }),
+  current_tension: Type.Optional(Type.String()),
+  emotional_arc: Type.Optional(Type.String()),
+  people: Type.Optional(Type.Array(Type.String())),
+  source_episode_ids: Type.Array(Type.String()),
+  reason: Type.String({ description: "为什么这些线重复或高度重叠" }),
+});
+export type MergeStorylinesData = Static<typeof MergeStorylinesParams>;
+
+export const GetStorylineParams = Type.Object({
+  id: Type.String({ description: "storyline ID" }),
+});
+export type GetStorylineData = Static<typeof GetStorylineParams>;
 
 export const UpdateProfileParams = Type.Object({
   operation: Type.Union([
@@ -82,13 +100,18 @@ export const UpdateProfileParams = Type.Object({
 });
 export type UpdateProfileData = Static<typeof UpdateProfileParams>;
 
-export const SearchDiaryParams = Type.Object({
+export const SearchMemoryParams = Type.Object({
   query: Type.String({ description: "搜索关键词" }),
   limit: Type.Optional(
     Type.Number({ description: "最多返回条数", default: 10 }),
   ),
 });
-export type SearchDiaryData = Static<typeof SearchDiaryParams>;
+export type SearchMemoryData = Static<typeof SearchMemoryParams>;
+
+export const SendCheckinParams = Type.Object({
+  text: Type.String({ description: "最终发送给日记群的短文本" }),
+});
+export type SendCheckinData = Static<typeof SendCheckinParams>;
 
 export const FetchArticleParams = Type.Object({
   url: Type.String({ description: "要抓取并清洗成 markdown 的 URL" }),

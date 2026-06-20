@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dbPath as defaultDbPath } from "../config.js";
@@ -18,7 +18,7 @@ export function getDb(path: string = defaultDbPath): Database.Database {
 }
 
 export function initDb(db: Database.Database): void {
-  const schema = readFileSync(join(__dirname, "schema.sql"), "utf-8");
+  const schema = readSchema();
   db.exec(schema);
 
   const profileExists = db
@@ -29,6 +29,18 @@ export function initDb(db: Database.Database): void {
       "INSERT INTO profile (id, content, updated_at) VALUES (1, ?, ?)",
     ).run(EMPTY_PROFILE, new Date().toISOString());
   }
+}
+
+function readSchema(): string {
+  const candidates = [
+    join(__dirname, "schema.sql"),
+    join(__dirname, "../../src/storage/schema.sql"),
+  ];
+  const path = candidates.find((candidate) => existsSync(candidate));
+  if (!path) {
+    throw new Error(`schema.sql 不存在：${candidates.join(", ")}`);
+  }
+  return readFileSync(path, "utf-8");
 }
 
 export function closeDb(): void {

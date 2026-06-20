@@ -29,7 +29,6 @@ import { initSchedules } from "./schedule/cron.js";
 import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
 import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
-import { renderApprovalCard } from "./lark/cards.js";
 import { toggleScheduleEnabled } from "./schedule/config.js";
 
 const bootLog = logger("boot");
@@ -91,6 +90,8 @@ async function runForeground() {
       companion: companionRoute,
       weekly: weeklyRoute,
     },
+    channel,
+    registry,
   });
 
   const cmdCtx: CommandContext = {
@@ -173,7 +174,6 @@ async function runForeground() {
         return;
       }
       if (await handleScheduleAction(evt, channel)) return;
-      await handleApprovalAction(evt, channel, harnessManager);
     },
     error: (err) => {
       larkLog.error("错误:", err.message);
@@ -230,59 +230,6 @@ async function handleScheduleAction(
   }
   await channel.updateCard(evt.messageId, renderSchedulesCard(config));
   return true;
-}
-
-async function handleApprovalAction(
-  evt: CardActionEvent,
-  channel: ReturnType<typeof initChannel>,
-  harnessManager: HarnessManager,
-): Promise<void> {
-  const value = evt.action.value;
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  const approvalId = record.approval_id;
-  const action = record.action;
-  if (typeof approvalId !== "string") return;
-  if (action !== "approve" && action !== "reject") return;
-
-  const approvalService = harnessManager.getApprovalService();
-  const approval = approvalService.get(approvalId);
-  if (!approval) {
-    await channel.send(evt.chatId, { text: `审批不存在：${approvalId}` });
-    return;
-  }
-  const payload = approvalService.parsePayload(approval);
-
-  try {
-    if (action === "reject") {
-      approvalService.reject(approvalId);
-      await channel.updateCard(
-        evt.messageId,
-        renderApprovalCard(approvalId, payload, "rejected"),
-      );
-      return;
-    }
-
-    const applied = approvalService.apply(
-      approvalId,
-      harnessManager.getMemoryService(),
-    );
-    await channel.updateCard(
-      evt.messageId,
-      renderApprovalCard(approvalId, payload, "applied"),
-    );
-    if (applied.chat_id) {
-      await harnessManager.resetSession(applied.chat_id);
-    }
-  } catch (err) {
-    await channel.updateCard(
-      evt.messageId,
-      renderApprovalCard(approvalId, payload, "failed"),
-    );
-    await channel.send(evt.chatId, {
-      text: `审批处理失败：${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────

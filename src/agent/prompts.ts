@@ -14,18 +14,30 @@ const responseStyle = readPromptFile("response_style.md");
 
 export interface MemorySnapshot {
   profile: string;
-  activeWorkingItems: Array<{
+  activeStorylines: Array<{
     id: string;
-    type: string;
-    name: string;
+    kind: string;
+    title: string;
     status: string;
-    thesis: string | null;
-    current_questions: string[];
-    decisions: string[];
-    next_steps: string[];
-    related_people: string[];
+    summary: string;
+    current_tension: string | null;
+    emotional_arc: string | null;
+    people: string[];
+    last_active_at: string;
   }>;
-  recentEpisodes: Array<{
+  recentDormantStorylines: Array<{
+    id: string;
+    kind: string;
+    title: string;
+    status: string;
+    summary: string;
+    current_tension: string | null;
+    emotional_arc: string | null;
+    people: string[];
+    last_active_at: string;
+  }>;
+  freshEpisodes: Array<{
+    id: string;
     brief: string | null;
     occurred_at: string;
     source_scope_id: string;
@@ -39,37 +51,63 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
     .prepare("SELECT content FROM profile WHERE id = 1")
     .get() as { content: string } | undefined;
 
-  const items = db
+  const activeStorylines = db
     .prepare(
-      `SELECT id, type, name, status, thesis,
-              current_questions_json, decisions_json,
-              next_steps_json, related_people_json
-       FROM working_items WHERE status = 'active'
-       ORDER BY updated_at DESC`,
+      `SELECT id, kind, title, status, summary, current_tension, emotional_arc,
+              people_json, last_active_at
+       FROM storylines
+       WHERE status = 'active'
+       ORDER BY last_active_at DESC`,
+    )
+    .all() as Array<Record<string, any>>;
+
+  const dormantStorylines = db
+    .prepare(
+      `SELECT id, kind, title, status, summary, current_tension, emotional_arc,
+              people_json, last_active_at
+       FROM storylines
+       WHERE status = 'dormant'
+       ORDER BY last_active_at DESC
+       LIMIT 5`,
     )
     .all() as Array<Record<string, any>>;
 
   const episodes = db
     .prepare(
-      `SELECT brief, occurred_at, source_scope_id, source_message_id
-       FROM episodes ORDER BY occurred_at DESC LIMIT 10`,
+      `SELECT id, brief, occurred_at, source_scope_id, source_message_id
+       FROM episodes
+       WHERE digested_run_id IS NULL
+       ORDER BY occurred_at ASC
+       LIMIT 10`,
     )
-    .all() as Array<Record<string, any>>;
+    .all();
 
   return {
     profile: profile?.content ?? "",
-    activeWorkingItems: items.map((r) => ({
+    activeStorylines: activeStorylines.map((r) => ({
       id: r.id,
-      type: r.type,
-      name: r.name,
+      kind: r.kind,
+      title: r.title,
       status: r.status,
-      thesis: r.thesis,
-      current_questions: JSON.parse(r.current_questions_json),
-      decisions: JSON.parse(r.decisions_json),
-      next_steps: JSON.parse(r.next_steps_json),
-      related_people: JSON.parse(r.related_people_json),
+      summary: r.summary,
+      current_tension: r.current_tension,
+      emotional_arc: r.emotional_arc,
+      people: JSON.parse(r.people_json),
+      last_active_at: r.last_active_at,
     })),
-    recentEpisodes: episodes.map((r) => ({
+    recentDormantStorylines: dormantStorylines.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      title: r.title,
+      status: r.status,
+      summary: r.summary,
+      current_tension: r.current_tension,
+      emotional_arc: r.emotional_arc,
+      people: JSON.parse(r.people_json),
+      last_active_at: r.last_active_at,
+    })),
+    freshEpisodes: (episodes as Array<Record<string, any>>).map((r) => ({
+      id: r.id,
       brief: r.brief,
       occurred_at: r.occurred_at,
       source_scope_id: r.source_scope_id,
@@ -90,30 +128,40 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
 
   sections.push("---\n# 身份画像\n" + snapshot.profile);
 
-  if (snapshot.activeWorkingItems.length > 0) {
-    const items = snapshot.activeWorkingItems
+  if (snapshot.activeStorylines.length > 0) {
+    const items = snapshot.activeStorylines
       .map((item) => {
-        const lines = [`## ${item.id} | ${item.name}（${item.type}）`];
-        if (item.thesis) lines.push(`主旨：${item.thesis}`);
-        if (item.current_questions.length)
-          lines.push(`当前问题：${item.current_questions.join("；")}`);
-        if (item.decisions.length)
-          lines.push(`已决策：${item.decisions.join("；")}`);
-        if (item.next_steps.length)
-          lines.push(`下一步：${item.next_steps.join("；")}`);
-        if (item.related_people.length)
-          lines.push(`相关人：${item.related_people.join("、")}`);
+        const lines = [`## ${item.id} | ${item.title}（${item.kind}）`];
+        lines.push(`摘要：${item.summary}`);
+        if (item.current_tension) lines.push(`当前张力：${item.current_tension}`);
+        if (item.emotional_arc) lines.push(`情绪/态度弧线：${item.emotional_arc}`);
+        if (item.people.length) lines.push(`相关人：${item.people.join("、")}`);
+        lines.push(`last_active_at：${item.last_active_at}`);
         return lines.join("\n");
       })
       .join("\n\n");
-    sections.push("---\n# 工作集（active）\n" + items);
+    sections.push("---\n# Storylines（active）\n" + items);
   }
 
-  if (snapshot.recentEpisodes.length > 0) {
-    const eps = snapshot.recentEpisodes
-      .map((e) => `- [${e.occurred_at}] ${e.brief ?? "（无摘要）"}`)
+  if (snapshot.recentDormantStorylines.length > 0) {
+    const items = snapshot.recentDormantStorylines
+      .map((item) => {
+        const lines = [`## ${item.id} | ${item.title}（${item.kind}, dormant）`];
+        lines.push(`摘要：${item.summary}`);
+        if (item.current_tension) lines.push(`当前张力：${item.current_tension}`);
+        if (item.emotional_arc) lines.push(`情绪/态度弧线：${item.emotional_arc}`);
+        lines.push(`last_active_at：${item.last_active_at}`);
+        return lines.join("\n");
+      })
+      .join("\n\n");
+    sections.push("---\n# Storylines（recent dormant）\n" + items);
+  }
+
+  if (snapshot.freshEpisodes.length > 0) {
+    const eps = snapshot.freshEpisodes
+      .map((e) => `- ${e.id} [${e.occurred_at}] ${e.brief ?? "（无摘要）"}`)
       .join("\n");
-    sections.push("---\n# 最近日记 episode\n" + eps);
+    sections.push("---\n# Fresh episodes（尚未被 daily_memory 消化）\n" + eps);
   }
 
   sections.push("---\n# 知识地图\n" + snapshot.knowledgeIndex);

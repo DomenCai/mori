@@ -23,12 +23,13 @@ CREATE TABLE IF NOT EXISTS episodes (
   source_ended_at TEXT NOT NULL,
   brief TEXT,
   analysis_json TEXT NOT NULL,
-  importance INTEGER NOT NULL DEFAULT 5,
   occurred_at TEXT NOT NULL,
+  digested_run_id TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_source_scope ON episodes(source_scope_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_source_message ON episodes(source_message_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_digested ON episodes(digested_run_id, occurred_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
   brief,
@@ -67,36 +68,55 @@ CREATE TABLE IF NOT EXISTS profile_revisions (
   created_at TEXT NOT NULL
 );
 
--- 工作集
-CREATE TABLE IF NOT EXISTS working_items (
+-- 叙事线：episode 与 profile 之间的“正在展开什么”压缩层。
+CREATE TABLE IF NOT EXISTS storylines (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
-  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
   status TEXT NOT NULL,
-  thesis TEXT,
-  current_questions_json TEXT NOT NULL DEFAULT '[]',
-  decisions_json TEXT NOT NULL DEFAULT '[]',
-  next_steps_json TEXT NOT NULL DEFAULT '[]',
-  related_people_json TEXT NOT NULL DEFAULT '[]',
-  source_ids_json TEXT NOT NULL DEFAULT '[]',
+  summary TEXT NOT NULL,
+  current_tension TEXT,
+  emotional_arc TEXT,
+  people_json TEXT NOT NULL DEFAULT '[]',
+  evidence_episode_ids_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  last_mentioned_at TEXT
+  last_active_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_storylines_status ON storylines(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_storylines_last_active ON storylines(last_active_at);
 
--- 待审批工具调用
-CREATE TABLE IF NOT EXISTS pending_tool_approvals (
+-- 叙事线变更审计
+CREATE TABLE IF NOT EXISTS storyline_revisions (
   id TEXT PRIMARY KEY,
-  tool_name TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  status TEXT NOT NULL,
-  chat_id TEXT,
-  message_id TEXT,
+  storyline_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  old_json TEXT,
+  new_json TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  source_episode_ids_json TEXT NOT NULL DEFAULT '[]',
   run_id TEXT,
-  created_at TEXT NOT NULL,
-  resolved_at TEXT
+  created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_pending_tool_approvals_status ON pending_tool_approvals(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_storyline_revisions_storyline ON storyline_revisions(storyline_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_storyline_revisions_run ON storyline_revisions(run_id);
+
+-- 每日记忆整理审计：dream、机械收缩、nudge 都归入同一条 run。
+CREATE TABLE IF NOT EXISTS daily_memory_runs (
+  id TEXT PRIMARY KEY,
+  date_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  input_episode_ids_json TEXT NOT NULL DEFAULT '[]',
+  dream_summary TEXT,
+  storyline_changes_json TEXT NOT NULL DEFAULT '[]',
+  nudge_evaluated INTEGER NOT NULL DEFAULT 0,
+  nudge_sent INTEGER NOT NULL DEFAULT 0,
+  nudge_sent_at TEXT,
+  nudge_text TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 -- 周总结存档
 CREATE TABLE IF NOT EXISTS weekly_summaries (

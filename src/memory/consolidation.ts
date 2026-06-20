@@ -3,13 +3,14 @@ import type { LarkChannel } from "@larksuite/channel";
 import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { DiaryService } from "../diary/service.js";
-import { MemoryService } from "./service.js";
-import { genId, nowISO, weekKey, summarizeTextDelta } from "../utils.js";
+import { MemoryService, type StorylineChangeSummary } from "./service.js";
+import { genId, nowISO, summarizeTextDelta, weekKey } from "../utils.js";
 import { logger } from "../log.js";
-import { renderApprovalCard, renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
+import { renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
 import { MessageService } from "../storage/messages.js";
 
 const log = logger("consolidation");
+const MAX_EPISODE_TRANSCRIPT_CHARS = 2000;
 
 export async function runConsolidation(
   db: Database.Database,
@@ -24,52 +25,66 @@ export async function runConsolidation(
   const now = new Date();
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() - 7);
-  const episodes = diaryService.getEpisodesSince(since ?? weekStart.toISOString());
+  const sinceIso = since ?? weekStart.toISOString();
+  const episodes = diaryService.getEpisodesSince(sinceIso);
+  const dailyRuns = memoryService
+    .getRecentDailyMemoryRuns(14)
+    .filter((run) => run.updated_at >= sinceIso);
+  const storylineChanges = memoryService.getStorylineChangesSince(sinceIso);
 
-  if (episodes.length === 0) {
-    log.info("本周无 episode，跳过");
+  if (episodes.length === 0 && dailyRuns.length === 0 && storylineChanges.length === 0) {
+    log.info("本周无 memory 信号，跳过");
     return;
   }
 
   const runId = genId("run");
   const scopeId = `consolidation_${runId}`;
-
   const entry = await harnessManager.getOrCreate(scopeId, "consolidation", {
     runId,
   });
 
   const episodeSummaries = episodes
     .map((ep) => {
-      const transcript = buildEpisodeTranscript(
+      const transcript = buildUserEpisodeTranscript(
         diaryService.getSourceMessagesForEpisode(ep as any),
       );
-      return `[${ep.occurred_at}] ${ep.brief}\n${ep.analysis_json}${
-        transcript ? `\n原文：\n${transcript}` : ""
+      return `[${ep.occurred_at}] ${ep.id} ${ep.brief}\n${ep.analysis_json}${
+        transcript ? `\n用户原文证据：\n${transcript}` : ""
       }`;
     })
     .join("\n\n---\n\n");
 
-  const mechanicalPrompt = `# 周度合并：整理与更新
+  const mechanicalPrompt = `# 周度合并：画像更新与客观记录
 
-以下是本周的所有 episode（共 ${episodes.length} 条）：
+你只做两件事：
 
-${episodeSummaries}
+1. 判断这一周的叙事变化是否应该改变长期身份画像，必要时调用 update_profile。
+2. 用三五句客观、不带情绪的话记一笔这周发生了什么，作为周记录正文。
 
-请完成两件事：
+边界：
+- 允许 update_profile；禁止写 storylines，storylines 是 daily_memory 的职责。
+- 画像变更必须有用户证据，不能只基于 daily run 或 storyline 二次总结。
+- 只有 \`user:\` 原文可作为画像证据；assistant 内容绝不可作为画像证据。
+- 仅当出现跨篇稳定、反复出现的信号时才修改画像；不因单篇内容或一时情绪改画像。
+- 如 episode evidence 不足，可用 search_memory 回查原文。
 
-1. **增量更新工作集**：
-   - 新出现的项目/关注点调用 create_working_item
-   - 更新已有项目必须使用工作集 snapshot 中的 id 调 update_working_item
-   - 长期未被提及的项目转为 dormant 属于高影响变更，会自动进入审批
-   - 重复或高度重叠的工作集调用 merge_working_items 提出合并审批
+本周 daily_memory runs：
+\`\`\`json
+${JSON.stringify(dailyRuns, null, 2)}
+\`\`\`
 
-2. **保守更新身份画像**：
-   - 仅当出现**跨篇稳定、反复出现**的信号时才修改画像（调用 update_profile）
-   - 不因单篇内容或一时情绪改画像
-   - 原文里只有 \`user:\` 的内容可作为画像证据；\`assistant:\` 是你自己说过的话，仅供理解上下文，绝不可作为画像证据
-   - 每次改动说明原因
+本周 touched storylines：
+\`\`\`json
+${JSON.stringify(storylineChanges, null, 2)}
+\`\`\`
 
-做完工具调用后，用三五句**客观、不带情绪**的话记一笔这周客观发生了什么——这是给周报存档的事实梳理，先别抒情、别写寄语。`;
+本周 episodes（共 ${episodes.length} 条）：
+${episodeSummaries || "（无 episode）"}
+
+当前 profile：
+${memoryService.getProfile()}
+
+做完必要工具调用后，直接输出周记录正文。`;
 
   const friendPrompt = `现在脱下分析的帽子。
 
@@ -78,7 +93,6 @@ ${episodeSummaries}
 这一轮只说话，不要调用任何工具。`;
 
   let captured = "";
-
   const unsubscribe = entry.harness.subscribe(async (event) => {
     if (
       event.type === "message_update" &&
@@ -87,42 +101,18 @@ ${episodeSummaries}
       captured += event.assistantMessageEvent.delta;
     }
     if (event.type === "tool_execution_end") {
-      // 模型常把叙述文本和 toolCall 放在同一条消息里；recap 只要最后一次工具调用之后的正文，
-      // 所以每次工具结束就清空，丢掉中间的“让我看看…”这类过程叙述。
       captured = "";
-      await sendApprovalCardIfNeeded(
-        event.result,
-        db,
-        channel,
-        registry,
-        harnessManager,
-      );
     }
   });
 
-  let finalizedWorkingUpdates = false;
-  const runStartIso = nowISO();
-  const wk = weekKey(new Date(episodes[episodes.length - 1].occurred_at as string));
+  const wk = weekKey(new Date(episodes.at(-1)?.occurred_at as string | undefined ?? now));
   const diaryChats = registry.getDiaryChats();
   const messageService = new MessageService(db);
   try {
-    // 第一轮（机械 + 客观梳理）：更新工作集/画像，最后给一段事实记录。
     captured = "";
+    await entry.harness.setActiveTools(["update_profile", "search_memory"]);
     await entry.harness.prompt(mechanicalPrompt);
     const recapText = captured.trim();
-    finalizedWorkingUpdates = true;
-
-    const approvalIds =
-      harnessManager.finalizeConsolidationWorkingItemUpdates(runId);
-    for (const approvalId of approvalIds) {
-      await sendApprovalCardById(
-        approvalId,
-        db,
-        channel,
-        registry,
-        harnessManager,
-      );
-    }
 
     const profileChanges = memoryService
       .getProfileRevisionsByRun(runId)
@@ -130,18 +120,17 @@ ${episodeSummaries}
         reason: r.reason,
         delta: summarizeTextDelta(r.old_content, r.new_content),
       }));
-    const workingChanges = memoryService.getWorkingItemsTouchedSince(runStartIso);
 
     const recordCard = renderWeeklyRecordCard({
       weekKey: wk,
       recap: recapText,
       profileChanges,
-      workingChanges,
+      storylineChanges: compactStorylineChanges(storylineChanges),
     });
     const recordText = buildWeeklyRecordText(
       recapText,
       profileChanges,
-      workingChanges,
+      storylineChanges,
     );
     for (const chatId of diaryChats) {
       const sent = await channel.send(chatId, { card: recordCard });
@@ -159,7 +148,6 @@ ${episodeSummaries}
         )
         .run(genId("ws"), wk, text, nowISO());
 
-    // 机械更新和记录卡已经落地，这是耐久的核心：先存档 + 记 completed，不让后面的朋友轮拖累它。
     saveWeeklySummary(recordText);
     db.prepare(
       `INSERT INTO agent_runs (id, scope_id, command, model, tool_calls_json, status, created_at)
@@ -174,7 +162,6 @@ ${episodeSummaries}
       nowISO(),
     );
 
-    // 第二轮（朋友）：脱下帽子说几句，纯生成。锦上添花，失败不影响已落地的一切。
     try {
       captured = "";
       await entry.harness.setActiveTools([]);
@@ -196,89 +183,51 @@ ${episodeSummaries}
       log.warn(`朋友轮失败，已保留本周记录：${err}`);
     }
   } finally {
-    if (!finalizedWorkingUpdates) {
-      harnessManager.discardConsolidationWorkingItemUpdates(runId);
-    }
     unsubscribe();
     await harnessManager.resetSession(scopeId);
   }
 }
 
-async function sendApprovalCardIfNeeded(
-  result: unknown,
-  db: Database.Database,
-  channel: LarkChannel,
-  registry: ChatRegistry,
-  harnessManager: HarnessManager,
-): Promise<void> {
-  const approvalId = extractApprovalId(result);
-  if (!approvalId) return;
-  await sendApprovalCardById(approvalId, db, channel, registry, harnessManager);
-}
-
-async function sendApprovalCardById(
-  approvalId: string,
-  db: Database.Database,
-  channel: LarkChannel,
-  registry: ChatRegistry,
-  harnessManager: HarnessManager,
-): Promise<void> {
-  const approvalService = harnessManager.getApprovalService();
-  const approval = approvalService.get(approvalId);
-  if (!approval) return;
-  const payload = approvalService.parsePayload(approval);
-  const messageService = new MessageService(db);
-  for (const chatId of registry.getDiaryChats()) {
-    const sent = await channel.send(chatId, {
-      card: renderApprovalCard(approvalId, payload),
-    });
-    approvalService.attachMessage(approvalId, chatId, sent.messageId);
-    messageService.saveAssistantMessage({
-      id: sent.messageId,
-      chatId,
-      content: `工作集变更审批：${approvalId}`,
-    });
-  }
-}
-
-function extractApprovalId(result: unknown): string | null {
-  if (!result || typeof result !== "object") return null;
-  const details = (result as { details?: unknown }).details;
-  if (!details || typeof details !== "object") return null;
-  const approvalId = (details as { approvalId?: unknown }).approvalId;
-  return typeof approvalId === "string" ? approvalId : null;
-}
-
-const MAX_EPISODE_TRANSCRIPT_CHARS = 2000;
-
-// 回读原文做画像保真，但要有预算：超长的对话片段截断，episode 的 brief+observations 始终保留。
-function buildEpisodeTranscript(
+function buildUserEpisodeTranscript(
   messages: Array<{ role: string; content: string }>,
 ): string {
-  const full = messages.map((m) => `${m.role}: ${m.content}`).join("\n");
+  const full = messages
+    .filter((m) => m.role === "user")
+    .map((m) => `user: ${m.content}`)
+    .join("\n");
   if (full.length <= MAX_EPISODE_TRANSCRIPT_CHARS) return full;
-  return `${full.slice(0, MAX_EPISODE_TRANSCRIPT_CHARS)}\n…（原文过长已截断，完整内容可 search_diary 回查）`;
+  return `${full.slice(0, MAX_EPISODE_TRANSCRIPT_CHARS)}\n…（用户原文过长已截断，完整内容可 search_memory 回查）`;
 }
 
-// 记录卡 / 存档用的纯文本版：客观梳理 + 画像变更 + 工作集变更，让历史和检索仍能命中。
+function compactStorylineChanges(
+  changes: StorylineChangeSummary[],
+): Array<{ title: string; operation: string; status: string; reason: string }> {
+  return changes.map((change) => ({
+    title: change.title,
+    operation: change.operation,
+    status: change.status,
+    reason: change.reason,
+  }));
+}
+
 function buildWeeklyRecordText(
   recap: string,
   profileChanges: Array<{ reason: string; delta: string }>,
-  workingChanges: Array<{ name: string; status: string; isNew: boolean }>,
+  storylineChanges: StorylineChangeSummary[],
 ): string {
   const parts = [recap.trim()];
+  if (storylineChanges.length > 0) {
+    parts.push(
+      `📌 叙事线索变化（${storylineChanges.length}）\n` +
+        storylineChanges
+          .map((c) => `- ${c.operation} ${c.title} → ${c.status}（${c.reason}）`)
+          .join("\n"),
+    );
+  }
   if (profileChanges.length > 0) {
     parts.push(
       `🧠 身份画像变更（${profileChanges.length}）\n` +
         profileChanges.map((c) => `- ${c.reason}\n  ${c.delta}`).join("\n"),
-    );
-  }
-  if (workingChanges.length > 0) {
-    parts.push(
-      `📌 工作集变更（${workingChanges.length}）\n` +
-        workingChanges
-          .map((c) => `- ${c.isNew ? "新建" : "更新"} ${c.name} → ${c.status}`)
-          .join("\n"),
     );
   }
   return parts.join("\n\n");

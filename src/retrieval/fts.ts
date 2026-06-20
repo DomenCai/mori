@@ -19,7 +19,7 @@ export interface SearchResult {
  *
  * 日记原文不再单独建 FTS；命中 episode 后按来源模型回查 messages。
  */
-export function searchDiary(
+export function searchMemory(
   db: Database.Database,
   query: string,
   limit = 10,

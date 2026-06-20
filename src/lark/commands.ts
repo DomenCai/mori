@@ -5,6 +5,7 @@ import type { HarnessManager } from "../agent/harness.js";
 import { scopeIdForMessage } from "../storage/messages.js";
 import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
 import { renderInfoCard, renderProfileHistoryCard } from "./cards.js";
+import type { DailyMemoryRun } from "../memory/service.js";
 
 export interface CommandContext {
   channel: LarkChannel;
@@ -28,7 +29,12 @@ const HELP_TEXT = `/help - 查看命令列表
 /profile add <new_text> - 添加身份画像
 /profile remove <old_text> - 删除身份画像中的唯一子串
 /profile replace <old_text> => <new_text> - 替换身份画像中的唯一子串
-/working - 查看工作集
+/storylines - 查看 active + recent dormant 叙事线
+/storyline <id> - 查看单条叙事线详情
+/storyline close <id> - 手动软关闭叙事线
+/storyline reopen <id> - 手动重新激活叙事线
+/dream - 查看最近 daily_memory runs
+/dream YYYY-MM-DD - 查看某天 daily_memory 详情
 /schedules - 查看定时任务配置
 /consolidate - 手动触发周度合并`;
 
@@ -54,6 +60,12 @@ export async function handleCommand(
       return handleCompact(msg, ctx);
     case "/profile":
       return handleProfile(msg, ctx);
+    case "/storylines":
+      return handleStorylines(msg, ctx);
+    case "/storyline":
+      return handleStoryline(msg, ctx, args);
+    case "/dream":
+      return handleDream(msg, ctx, args);
     case "/working":
       return handleWorking(msg, ctx);
     case "/schedules":
@@ -235,26 +247,153 @@ async function handleWorking(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  const items = ctx.harnessManager.getMemoryService().getAllWorkingItems();
+  await ctx.channel.send(msg.chatId, {
+    text: "工作集已由 storylines 取代。使用 /storylines 查看当前叙事线。",
+  });
+  return { handled: true };
+}
+
+async function handleStorylines(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  const items = ctx.harnessManager.getMemoryService().getVisibleStorylines();
   if (items.length === 0) {
-    await ctx.channel.send(msg.chatId, { text: "工作集为空" });
+    await ctx.channel.send(msg.chatId, { text: "暂无 storylines" });
     return { handled: true };
   }
   const text = items
     .map((item) => {
-      const status =
-        item.status === "active"
-          ? "🟢"
-          : item.status === "dormant"
-            ? "💤"
-            : item.status === "done"
-              ? "✅"
-              : "❌";
-      return `${status} **${item.name}**（${item.type}）\nID: \`${item.id}\`\n${item.thesis ?? ""}`;
+      const status = item.status === "active" ? "🟢" : item.status === "dormant" ? "💤" : "✅";
+      return [
+        `${status} **${item.title}**（${item.kind}）`,
+        `ID: \`${item.id}\` · last_active_at: ${item.last_active_at}`,
+        item.summary,
+        item.current_tension ? `当前张力：${item.current_tension}` : "",
+      ].filter(Boolean).join("\n");
     })
     .join("\n\n");
-  await ctx.channel.send(msg.chatId, { card: renderInfoCard("📋 工作集", text) });
+  await ctx.channel.send(msg.chatId, { card: renderInfoCard("📋 Storylines", text) });
   return { handled: true };
+}
+
+async function handleStoryline(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+  args: string[],
+): Promise<CommandResult> {
+  const memory = ctx.harnessManager.getMemoryService();
+  const [first, second] = args;
+  if (!first) return sendStorylineUsage(msg, ctx);
+
+  if (first === "close" || first === "reopen") {
+    if (!second) return sendStorylineUsage(msg, ctx);
+    try {
+      memory.setStorylineStatus({
+        id: second,
+        status: first === "close" ? "closed" : "active",
+        reason: "manual_correction",
+      });
+      await ctx.channel.send(msg.chatId, {
+        text: first === "close" ? "✅ Storyline 已关闭" : "✅ Storyline 已重新激活",
+      });
+    } catch (err) {
+      await ctx.channel.send(msg.chatId, {
+        text: `Storyline 修改失败：${formatCommandError(err)}`,
+      });
+    }
+    return { handled: true };
+  }
+
+  const item = memory.getStoryline(first);
+  if (!item) {
+    await ctx.channel.send(msg.chatId, { text: `storyline 不存在：${first}` });
+    return { handled: true };
+  }
+  const revisions = memory.getStorylineRevisions(first);
+  const body = [
+    `**${item.title}**（${item.kind} / ${item.status}）`,
+    `ID: \`${item.id}\``,
+    `last_active_at: ${item.last_active_at}`,
+    "",
+    item.summary,
+    item.current_tension ? `\n**当前张力**\n${item.current_tension}` : "",
+    item.emotional_arc ? `\n**情绪/态度弧线**\n${item.emotional_arc}` : "",
+    item.people.length ? `\n**相关人**\n${item.people.join("、")}` : "",
+    item.evidence_episode_ids.length
+      ? `\n**证据 episodes**\n${item.evidence_episode_ids.map((id) => `- ${id}`).join("\n")}`
+      : "",
+    revisions.length
+      ? `\n**最近 revisions**\n${revisions.map((r) => `- ${r.created_at} · ${r.operation} · ${r.reason}`).join("\n")}`
+      : "",
+  ].filter(Boolean).join("\n");
+  await ctx.channel.send(msg.chatId, { card: renderInfoCard("📋 Storyline", body) });
+  return { handled: true };
+}
+
+async function sendStorylineUsage(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+): Promise<CommandResult> {
+  await ctx.channel.send(msg.chatId, {
+    text: "用法：/storyline <id> | /storyline close <id> | /storyline reopen <id>",
+  });
+  return { handled: true };
+}
+
+async function handleDream(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+  args: string[],
+): Promise<CommandResult> {
+  const memory = ctx.harnessManager.getMemoryService();
+  const dateKey = args[0];
+  if (dateKey) {
+    const run = memory.getDailyMemoryRun(dateKey);
+    if (!run) {
+      await ctx.channel.send(msg.chatId, { text: `没有 ${dateKey} 的 daily_memory 记录` });
+      return { handled: true };
+    }
+    await ctx.channel.send(msg.chatId, {
+      card: renderInfoCard("🌙 Daily Memory", formatDailyRun(run, true)),
+    });
+    return { handled: true };
+  }
+
+  const runs = memory.getRecentDailyMemoryRuns(7);
+  if (runs.length === 0) {
+    await ctx.channel.send(msg.chatId, { text: "暂无 daily_memory 记录" });
+    return { handled: true };
+  }
+  await ctx.channel.send(msg.chatId, {
+    card: renderInfoCard(
+      "🌙 Daily Memory",
+      runs.map((run) => formatDailyRun(run, false)).join("\n\n---\n\n"),
+    ),
+  });
+  return { handled: true };
+}
+
+function formatDailyRun(
+  run: DailyMemoryRun,
+  verbose: boolean,
+): string {
+  const lines = [
+    `**${run.date_key}** · ${run.status}`,
+    `episodes: ${run.input_episode_ids.length} · storyline_changes: ${run.storyline_changes.length} · nudge: ${run.nudge_sent ? "sent" : run.nudge_evaluated ? "evaluated" : "none"}`,
+  ];
+  if (run.dream_summary) lines.push(`dream: ${run.dream_summary}`);
+  if (run.nudge_text) lines.push(`nudge: ${run.nudge_text}`);
+  if (run.error) lines.push(`error: ${run.error}`);
+  if (verbose && run.storyline_changes.length) {
+    lines.push(
+      "storyline changes:\n" +
+        run.storyline_changes
+          .map((c) => `- ${c.operation} ${c.title} → ${c.status}（${c.reason}）`)
+          .join("\n"),
+    );
+  }
+  return lines.join("\n");
 }
 
 async function handleSchedules(

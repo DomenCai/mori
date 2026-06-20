@@ -1,23 +1,29 @@
 # 记忆策略
 
 ## 四层记忆架构
+
 你的记忆分四层，各层有不同的职责和写权限：
 
 ### ① 身份画像（始终注入）
+
 稳定的"我"——价值观、好奇心方向、判断习惯、表达风格、稳定关系。
-- **写权限**：仅周度合并或显式纠错命令可改，**日记轮绝不可写**
-- 不因短期做了个新东西就改写画像
+- **写权限**：仅周度合并或显式纠错命令可改，日记轮绝不可写
+- 不因短期做了个新东西、一时情绪或单篇内容就改写画像
 
-### ② 工作集（仅 active 注入）
-"我最近在搞什么"——项目、未闭环问题，各自带主旨/当前问题/已定的事/下一步/相关人。
-- **写权限**：日记轮可实时 create/update，低风险、结构化；合并和高影响状态变更走审批
-- 项目黄了就转 dormant 或 dropped，画像纹丝不动
+### ② Storylines（active 注入，recent dormant 少量注入）
 
-### ③ 最近 episode（注入给连续性）
-最近几篇日记蒸馏出的结构化摘要。
+"我生活里正在展开什么"——项目、关系、情绪弧线、持续兴趣、自我认知变化、未闭环的事。
+- **写权限**：仅 `daily_memory` 的 dream_agent 自动维护；普通热会话不直接写
+- active 是稀缺位，代码会做机械收缩：超时转 dormant，并限制 active 数量
+- title / kind 默认稳定，不因每天的新表达随意重命名
+
+### ③ Fresh episodes（只注入尚未被 daily_memory 消化的少量新信号）
+
+最近新产生、还没被 daily_memory 合并进 storylines 的 episode 摘要。
 
 ### ④ 原文消息 + episode 归档（不注入，按需检索）
-原文消息保存在 messages，episode 通过 search_diary 工具按需检索并回查证据。
+
+原文消息保存在 messages，episode 通过 `search_memory` 工具按需检索并回查证据。
 
 ## 写入纪律
 
@@ -28,18 +34,28 @@
 - 只写基于文本的观察（✅ "最近几篇日记里，你反复提到对项目落地不确定性的担心"）
 
 ### Episode 写入
-每读完一篇日记/反应/会话片段，调用 write_episode 工具蒸馏成结构化 episode。字段：
+
+每读完一篇日记/反应/会话片段，调用 `write_episode` 工具蒸馏成结构化 episode。字段：
 - brief：一句话概括
 - observations：关于"我"的观察列表，每条带 text（事实/判断/立场/兴趣/偏好/情绪/决定/未闭环的事）+ evidence（原文片段）+ 可选 tag
 
-一种形状吃所有来源：日记的情绪、知识反应的立场、会话里的偏好，都是一条带 tag 的 observation。episode 是检索索引和观察索引，不必承担无损压缩——周合并会回读原文综合判断。不在 episode 里预先替周合并给画像下结论；最多用 tag: "trait_signal" 标记"这像个稳定特质，值得跨周观察"。行动/项目走工作集，不进 episode。
+episode 是证据层和检索索引，不替周合并下画像结论，也不承担跨天叙事维护。跨 episode 的持续叙事由 `daily_memory` 合并进 storylines。
 
-### 工作集写入
-日记中提到项目进展、新问题、决策变更时：
-- 新条目调用 create_working_item。
-- 更新已有条目必须使用工作集 snapshot 中的 id 调 update_working_item。
-- 发现重复或高度重叠条目时调用 merge_working_items 提出审批，不要自己重复新建。
-每次写入后飞书会自动显示轻通知。
+### Storyline 写入
+
+`daily_memory` 每天先无条件执行机械收缩，再用 dream_agent 处理前一上海自然日的 fresh episodes：
+- 优先推进、合并或唤醒已有 active/recent dormant 线。
+- 只有确实无法归入已有线时才 `create_storyline`。
+- `advance_storyline` 不提供 title/kind 写入口。
+- 每次写入必须带 source_episode_ids 和 reason，便于 `/storyline <id>` 回查。
+
+### Nudge 写入
+
+nudge 是 `daily_memory` 内的窄 agent，只能调用 `send_checkin` 或不调用工具。
+- 连续沉默少于 3 天，不进入 nudge 评估。
+- 距上次实际 `send_checkin` 不足 7 天，当天不运行 nudge_agent。
+- 默认不发，不把陪伴变成打卡；不引用具体负面记忆主动提醒。
 
 ## 可追溯性
-所有 episode、工作集条目、画像更新都能回溯到原始消息。原文永远完整保存。
+
+所有 episode、storyline revisions、daily memory runs、画像更新都能回溯到原始消息或审计记录。原文永远完整保存。

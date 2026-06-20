@@ -5,32 +5,42 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Model } from "@earendil-works/pi-ai";
+import type { LarkChannel } from "@larksuite/channel";
 import type Database from "better-sqlite3";
 import { DiaryService, type EpisodeSource } from "../diary/service.js";
-import { ApprovalService } from "../memory/approvals.js";
 import { MemoryService } from "../memory/service.js";
-import { MessageService, splitScopeId } from "../storage/messages.js";
+import { MessageService } from "../storage/messages.js";
 import { VaultService } from "../knowledge/vault.js";
 import { buildMemorySnapshot, buildSystemPrompt } from "./prompts.js";
 import { createWriteEpisodeTool } from "./tools/write-episode.js";
 import {
-  createCreateWorkingItemTool,
-  createMergeWorkingItemsTool,
-  createUpdateWorkingItemTool,
-} from "./tools/working-items.js";
+  createAdvanceStorylineTool,
+  createCreateStorylineTool,
+  createGetStorylineTool,
+  createMergeStorylinesTool,
+  createSetStorylineStatusTool,
+} from "./tools/storylines.js";
 import { createUpdateProfileTool } from "./tools/update-profile.js";
-import { createSearchDiaryTool } from "./tools/search-diary.js";
+import { createSearchMemoryTool } from "./tools/search-memory.js";
+import { createSendCheckinTool } from "./tools/send-checkin.js";
 import { createKnowledgeTools } from "./tools/knowledge.js";
 import { genId, shanghaiFileTimestamp } from "../utils.js";
 import type { SessionPolicyConfig } from "../config.js";
-import type { UpdateWorkingItemData } from "./schemas.js";
+import type { ChatRegistry } from "../lark/chatRegistry.js";
 
 const SESSION_CWD = "personal-agent";
 
 export interface HarnessEntry {
   harness: AgentHarness;
   scopeId: string;
-  chatType: "diary" | "dm" | "topic" | "thread" | "consolidation" | "knowledge_index";
+  chatType:
+    | "diary"
+    | "dm"
+    | "topic"
+    | "thread"
+    | "consolidation"
+    | "knowledge_index"
+    | "daily_memory";
   routeName: "companion" | "weekly";
   modelId: string;
   runId?: string;
@@ -54,6 +64,8 @@ export interface HarnessManagerOptions {
     companion: HarnessModelRoute;
     weekly: HarnessModelRoute;
   };
+  channel?: LarkChannel;
+  registry?: ChatRegistry;
 }
 
 export class HarnessManager {
@@ -62,12 +74,12 @@ export class HarnessManager {
   private repo: JsonlSessionRepo;
   private diaryService: DiaryService;
   private memoryService: MemoryService;
-  private approvalService: ApprovalService;
   private messageService: MessageService;
   private vaultService: VaultService;
   private db: Database.Database;
   private routes: HarnessManagerOptions["routes"];
-  private consolidationUpdatePlans = new Map<string, UpdateWorkingItemData[]>();
+  private channel?: LarkChannel;
+  private registry?: ChatRegistry;
 
   constructor(opts: HarnessManagerOptions) {
     this.db = opts.db;
@@ -80,9 +92,10 @@ export class HarnessManager {
     this.installShanghaiSessionFileNames();
     this.diaryService = new DiaryService(opts.db);
     this.memoryService = new MemoryService(opts.db);
-    this.approvalService = new ApprovalService(opts.db);
     this.messageService = new MessageService(opts.db);
     this.vaultService = new VaultService();
+    this.channel = opts.channel;
+    this.registry = opts.registry;
   }
 
   getDiaryService(): DiaryService {
@@ -91,10 +104,6 @@ export class HarnessManager {
 
   getMemoryService(): MemoryService {
     return this.memoryService;
-  }
-
-  getApprovalService(): ApprovalService {
-    return this.approvalService;
   }
 
   getMessageService(): MessageService {
@@ -266,7 +275,9 @@ ${JSON.stringify(files, null, 2)}
     const session = await this.repo.create({ cwd: SESSION_CWD });
 
     const route =
-      chatType === "consolidation" || chatType === "knowledge_index"
+      chatType === "consolidation" ||
+      chatType === "knowledge_index" ||
+      chatType === "daily_memory"
         ? this.routes.weekly
         : this.routes.companion;
 
@@ -283,26 +294,24 @@ ${JSON.stringify(files, null, 2)}
 
     const allTools: AgentTool[] = [
       createWriteEpisodeTool(this.diaryService, () => entry.currentEpisodeSource),
-      createCreateWorkingItemTool(this.memoryService),
-      createUpdateWorkingItemTool(this.memoryService, {
-        approvalService: isConsolidation ? this.approvalService : undefined,
-        planUpdate: isConsolidation
-          ? (params) =>
-            this.planConsolidationWorkingItemUpdate(
-              entry.runId ?? entry.scopeId,
-              params,
-            )
-          : undefined,
-        getChatId: () => chatIdForApproval(entry.scopeId),
-        getRunId: () => entry.runId,
-      }),
-      createMergeWorkingItemsTool(this.approvalService, {
-        getChatId: () => chatIdForApproval(entry.scopeId),
-        getRunId: () => entry.runId,
-      }),
-      createSearchDiaryTool(this.db),
+      createGetStorylineTool(this.memoryService),
+      createCreateStorylineTool(this.memoryService, () => entry.runId),
+      createAdvanceStorylineTool(this.memoryService, () => entry.runId),
+      createSetStorylineStatusTool(this.memoryService, () => entry.runId),
+      createMergeStorylinesTool(this.memoryService, () => entry.runId),
+      createSearchMemoryTool(this.db),
       ...createKnowledgeTools(this.vaultService),
     ];
+
+    if (this.channel && this.registry) {
+      allTools.push(
+        createSendCheckinTool(
+          this.channel,
+          this.registry,
+          this.messageService,
+        ),
+      );
+    }
 
     if (canEditProfile) {
       allTools.push(createUpdateProfileTool(this.memoryService, () => entry.runId));
@@ -369,60 +378,19 @@ ${JSON.stringify(files, null, 2)}
     };
   }
 
-  finalizeConsolidationWorkingItemUpdates(runId: string): string[] {
-    const updates = this.consolidationUpdatePlans.get(runId) ?? [];
-    this.consolidationUpdatePlans.delete(runId);
-    if (updates.length === 0) return [];
-
-    // 日常字段更新（active↔active、改 next_steps/thesis 等）直接落库，不打扰；
-    // 只有转 dormant/done/dropped 这类高影响状态变更才拎出来单独审批。
-    const highImpact = updates.filter((u) =>
-      isHighImpactWorkingItemStatus(u.status),
-    );
-    const routine = updates.filter(
-      (u) => !isHighImpactWorkingItemStatus(u.status),
-    );
-
-    for (const update of routine) {
-      this.memoryService.updateWorkingItem(update);
-    }
-
-    if (highImpact.length === 0) return [];
-
-    const approvalId = this.approvalService.createPending({
-      toolName: "batch_update_working_items",
-      payload: {
-        tool_name: "batch_update_working_items",
-        data: { updates: highImpact },
-        reason: "周总结/手动合并包含高影响工作集状态变更",
-      },
-      runId,
-    });
-    return [approvalId];
-  }
-
-  discardConsolidationWorkingItemUpdates(runId: string): void {
-    this.consolidationUpdatePlans.delete(runId);
-  }
-
-  private planConsolidationWorkingItemUpdate(
-    runKey: string,
-    params: UpdateWorkingItemData,
-  ): number {
-    const updates = this.consolidationUpdatePlans.get(runKey) ?? [];
-    updates.push(cloneWorkingItemUpdate(params));
-    this.consolidationUpdatePlans.set(runKey, updates);
-    return updates.length;
-  }
 }
 
 function appendSessionInstructions(
   basePrompt: string,
   chatType: HarnessEntry["chatType"],
 ): string {
-  // consolidation / knowledge_index 有各自的任务 prompt，不属于这套陪伴会话工具纪律。
+  // builtin 有各自的任务 prompt，不属于这套陪伴会话工具纪律。
   // 尤其周合并就是唯一自动写画像的路径，绝不能被“绝不修改身份画像”这句压住。
-  if (chatType === "consolidation" || chatType === "knowledge_index") {
+  if (
+    chatType === "consolidation" ||
+    chatType === "knowledge_index" ||
+    chatType === "daily_memory"
+  ) {
     return basePrompt;
   }
 
@@ -431,10 +399,10 @@ function appendSessionInstructions(
 
 ---
 # 当前会话工具纪律
-- 工作集更新已有条目必须使用 snapshot 里的 id 调 update_working_item；没有 id 时只能 create_working_item。
+- 持续叙事线由 daily_memory 统一维护；普通对话不要直接写 storylines。
 - 如用户明确要求收藏 URL，可先 fetch_article 再 save_to_garden。
 - DM、主题群和话题中，当前话题明显可能命中已有知识时可以 grep_vault / read_vault，回答要短，不要整段搬运原文。
-- 反应和普通对话蒸馏只写 episode / 工作集，绝不修改身份画像。`;
+- 反应和普通对话蒸馏只写 episode，绝不修改身份画像。`;
   }
 
   return `${basePrompt}
@@ -444,47 +412,26 @@ function appendSessionInstructions(
 - 用户消息会带有场景标记：
   - [日记群新日记]：这是一条新的日记根消息，必须先调用 write_episode 工具把原文蒸馏成 episode。
   - [日记群追问]：这是用户在同一篇日记上下文里继续回复，不是新的日记；不要求调用 write_episode。
-- 如果内容涉及正在推进的项目、开放问题或明确决策，新条目调用 create_working_item；更新已有条目必须用 snapshot 里的 id 调 update_working_item。
+- 持续叙事线由 daily_memory 统一维护；当前会话只写 episode、必要时 search_memory。
 - 对 [日记群新日记]，在完成必要工具调用前不要输出面向用户的回复文本；工具完成后再简短回应。
-- 对 [日记群追问]，可以直接自然回复；需要检索或更新工作集时再调用工具。`;
-}
-
-function isHighImpactWorkingItemStatus(status: string): boolean {
-  return status === "dormant" || status === "done" || status === "dropped";
-}
-
-function cloneWorkingItemUpdate(params: UpdateWorkingItemData): UpdateWorkingItemData {
-  return {
-    ...params,
-    current_questions: params.current_questions
-      ? [...params.current_questions]
-      : undefined,
-    decisions: params.decisions ? [...params.decisions] : undefined,
-    next_steps: params.next_steps ? [...params.next_steps] : undefined,
-    related_people: params.related_people ? [...params.related_people] : undefined,
-  };
+- 对 [日记群追问]，可以直接自然回复；需要检索时再调用 search_memory。`;
 }
 
 function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
   if (chatType === "diary") {
-    return ["write_episode", "create_working_item", "update_working_item", "search_diary"];
+    return ["write_episode", "search_memory"];
   }
   if (chatType === "consolidation") {
-    return [
-      "create_working_item",
-      "update_working_item",
-      "merge_working_items",
-      "update_profile",
-      "search_diary",
-    ];
+    return ["update_profile", "search_memory"];
   }
   if (chatType === "knowledge_index") {
     return ["read_vault"];
   }
+  if (chatType === "daily_memory") {
+    return [];
+  }
   return [
-    "search_diary",
-    "create_working_item",
-    "update_working_item",
+    "search_memory",
     "fetch_article",
     "save_to_garden",
     "grep_vault",
@@ -492,11 +439,6 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
     "update_frontmatter",
     "promote",
   ];
-}
-
-function chatIdForApproval(scopeId: string): string | null {
-  if (scopeId.startsWith("consolidation_")) return null;
-  return splitScopeId(scopeId).chatId;
 }
 
 function policyKeyForChatType(

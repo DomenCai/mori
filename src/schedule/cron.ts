@@ -14,6 +14,7 @@ import {
 import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { runConsolidation } from "../memory/consolidation.js";
+import { runDailyMemory } from "../memory/daily-memory.js";
 import { logger } from "../log.js";
 import {
   loadSchedulesConfig,
@@ -119,62 +120,13 @@ async function runBuiltin(
   try {
     if (schedule.builtin === "weekly_summary") {
       await runConsolidation(db, harnessManager, channel, registry);
-    } else if (schedule.builtin === "diary_reminder") {
-      await checkDiaryReminder(db, channel, registry);
+    } else if (schedule.builtin === "daily_memory") {
+      await runDailyMemory(db, harnessManager, channel, registry);
     } else if (schedule.builtin === "knowledge_index") {
       await harnessManager.runKnowledgeIndexBuiltin();
     }
   } catch (err) {
     log.error(`${schedule.builtin} 失败:`, err);
-  }
-}
-
-async function checkDiaryReminder(
-  db: Database.Database,
-  channel: LarkChannel,
-  registry: ChatRegistry,
-): Promise<void> {
-  const messageService = new MessageService(db);
-  const lastTime = messageService.getLastUserMessageTime(registry.getDiaryChats());
-
-  if (!lastTime) {
-    await sendReminder(db, channel, registry, "你还没有开始记日记哦，今天试试？");
-    return;
-  }
-
-  const daysSince = Math.floor(
-    (Date.now() - new Date(lastTime).getTime()) / 86_400_000,
-  );
-
-  if (daysSince >= 3) {
-    await sendReminder(
-      db,
-      channel,
-      registry,
-      `已经 ${daysSince} 天没记日记了，随便说说最近在想什么？`,
-    );
-  }
-}
-
-async function sendReminder(
-  db: Database.Database,
-  channel: LarkChannel,
-  registry: ChatRegistry,
-  text: string,
-): Promise<void> {
-  const messageService = new MessageService(db);
-  const diaryChats = registry.getDiaryChats();
-  for (const chatId of diaryChats) {
-    const sent = await channel.send(chatId, { text: `📝 ${text}` });
-    try {
-      messageService.saveAssistantMessage({
-        id: sent.messageId,
-        chatId,
-        content: `📝 ${text}`,
-      });
-    } catch {
-      // Registry does not own db; reminder delivery must not depend on audit logging.
-    }
   }
 }
 
