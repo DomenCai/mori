@@ -10,6 +10,7 @@
 | 命令行安装、守护运行、日志位置 | [CLI 使用指南](cli.md) |
 | 飞书里有哪些命令 | [飞书命令](commands.md) |
 | 运行时配置、模型路由、提示词、定时任务配置 | [配置参考](configuration.md) |
+| agent 的人格、声音定调、嘴上禁令 | [Agent 人格与声音](persona.md) |
 | 日记、storylines、daily memory、weekly consolidation | [记忆模型](memory-model.md) |
 | scope、续聊、新会话、thread/topic 冷却 | [会话与冷却规则](sessions.md) |
 | vault、Inbox/Garden、知识反应、知识工具 | [知识库](knowledge-base.md) |
