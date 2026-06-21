@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { schedulesPath } from "../config.js";
+import type { ScriptRuntimeConfig } from "../config.js";
 
 export interface SchedulesConfig {
   schedules: ScheduleDefinition[];
@@ -25,6 +26,7 @@ export interface ScriptSchedule extends BaseSchedule {
   kind: "script";
   script: string;
   cron: string;
+  runtime?: Partial<ScriptRuntimeConfig>;
   deliver: {
     notify: boolean;
     inbox: string;

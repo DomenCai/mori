@@ -4,7 +4,7 @@ import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import type { MutableClock } from "../clock.js";
 import { type StorylineChangeSummary } from "./service.js";
-import { genId, shanghaiDateKey, summarizeTextDelta, weekKey } from "../utils.js";
+import { genId, businessDateKey, summarizeTextDelta, weekKey } from "../utils.js";
 import { logger } from "../log.js";
 import { renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
@@ -65,8 +65,8 @@ export async function runWeeklyConsolidationForWindow(opts: {
   const diaryService = harnessManager.getDiaryService();
   const memoryService = harnessManager.getMemoryService();
   const episodes = diaryService.getEpisodesInWindow(since, until);
-  const sinceDateKey = shanghaiDateKey(new Date(since));
-  const untilDateKey = shanghaiDateKey(new Date(until));
+  const sinceDateKey = businessDateKey(new Date(since));
+  const untilDateKey = businessDateKey(new Date(until));
   const dailyRuns = memoryService.getDailyMemoryRunsInDateRange(
     sinceDateKey,
     untilDateKey,

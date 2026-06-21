@@ -1,4 +1,4 @@
-import { shanghaiDateTime, summarizeTextDelta } from "../utils.js";
+import { businessDateTime, summarizeTextDelta } from "../utils.js";
 
 export type AgentToolStatus = "running" | "done" | "error";
 
@@ -50,14 +50,14 @@ export function renderInfoCard(title: string, body: string): object {
   };
 }
 
-// 画像变更历史卡：每条 = 上海时间 · 原因 + 简洁 delta。
+// 画像变更历史卡：每条 = 业务时区时间 · 原因 + 简洁 delta。
 export function renderProfileHistoryCard(
   rows: Array<{ old_content: string | null; new_content: string; reason: string; created_at: string }>,
 ): object {
   const elements: object[] = rows.length
     ? rows.map((r) =>
         markdown(
-          `**${shanghaiDateTime(new Date(r.created_at))}** · ${r.reason}\n${summarizeTextDelta(r.old_content ?? "", r.new_content)}`,
+          `**${businessDateTime(new Date(r.created_at))}** · ${r.reason}\n${summarizeTextDelta(r.old_content ?? "", r.new_content)}`,
         ),
       )
     : [markdown("暂无画像变更历史")];

@@ -11,9 +11,10 @@ import {
   type StorylineRevision,
 } from "./service.js";
 import {
-  previousShanghaiDateKey,
-  shanghaiDateRange,
-  shanghaiDateStart,
+  businessDayDiff,
+  previousBusinessDateKey,
+  businessDateRange,
+  businessDateStart,
 } from "../utils.js";
 
 const log = logger("daily_memory");
@@ -37,7 +38,7 @@ export async function runDailyMemory(
   _channel: LarkChannel,
   registry: ChatRegistry,
 ): Promise<void> {
-  const dateKey = previousShanghaiDateKey(harnessManager.getClock().now());
+  const dateKey = previousBusinessDateKey(harnessManager.getClock().now());
   await runDailyMemoryForDate({
     db,
     harnessManager,
@@ -57,7 +58,7 @@ export async function runDailyMemoryForDate(opts: {
 }): Promise<void> {
   const { db, harnessManager, registry, dateKey, clock, nudge } = opts;
   if (clock) {
-    clock.set(new Date(shanghaiDateStart(dateKey).getTime() + 30 * 60 * 60_000));
+    clock.set(new Date(businessDateStart(dateKey).getTime() + 30 * 60 * 60_000));
   }
   const memoryService = harnessManager.getMemoryService();
   const existing = memoryService.getDailyMemoryRun(dateKey);
@@ -66,7 +67,7 @@ export async function runDailyMemoryForDate(opts: {
     return;
   }
 
-  const { endIso } = shanghaiDateRange(dateKey);
+  const { endIso } = businessDateRange(dateKey);
   const episodes = getUndigestedEpisodesForRun(db, endIso);
   const inputEpisodeIds = episodes.map((episode) => episode.id as string);
   const run = memoryService.createDailyMemoryRun(dateKey, inputEpisodeIds);
@@ -278,7 +279,7 @@ function buildNudgeContext(
 ): NudgeContext {
   const lastUserMessageAt = getLastUserMessageAt(db);
   const silentDays = lastUserMessageAt
-    ? Math.floor((clock.now().getTime() - new Date(lastUserMessageAt).getTime()) / 86_400_000)
+    ? businessDayDiff(new Date(lastUserMessageAt), clock.now())
     : null;
   const lastNudge = memoryService.getLastNudgeSentRun();
   return {
@@ -298,8 +299,9 @@ function shouldRunNudgeAgent(
   if (silentDays === null || silentDays < NUDGE_AFTER_SILENT_DAYS) return false;
   const lastNudge = memoryService.getLastNudgeSentRun();
   if (!lastNudge) return true;
-  const daysSinceNudge = Math.floor(
-    (clock.now().getTime() - new Date(lastNudge.nudge_sent_at ?? lastNudge.updated_at).getTime()) / 86_400_000,
+  const daysSinceNudge = businessDayDiff(
+    new Date(lastNudge.nudge_sent_at ?? lastNudge.updated_at),
+    clock.now(),
   );
   return daysSinceNudge >= MIN_NUDGE_INTERVAL_DAYS;
 }

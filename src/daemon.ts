@@ -9,7 +9,7 @@ import {
   unlinkSync,
   mkdirSync,
 } from "node:fs";
-import { loadLarkConfig, logsDir, pidPath } from "./config.js";
+import { loadLarkConfig, loadSetting, logsDir, pidPath } from "./config.js";
 import { dailyLogPath, logger } from "./log.js";
 
 const bootLog = logger("boot");
@@ -146,6 +146,7 @@ function writePidRecord(pid: number): boolean {
 }
 
 export function startDaemon(): void {
+  loadSetting();
   const state = readDaemonState();
   if (state.kind === "running") {
     bootLog.error(`已在运行 (pid ${state.record.pid})`);
@@ -201,6 +202,7 @@ export function stopDaemon(): void {
 }
 
 export function showStatus(): void {
+  loadSetting();
   const state = readDaemonState();
   if (state.kind === "running") {
     bootLog.info(`运行中 (pid ${state.record.pid})，日志: ${dailyLogPath(logsDir)}`);

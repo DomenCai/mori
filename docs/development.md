@@ -25,16 +25,16 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 设了 `PERSONAL_AGENT_DEV=1` 并用 `tsx watch` 热重载。首次运行若无飞书配置，终端会渲染二维码，用飞书 App 扫码即可创建/授权应用，凭据自动写入 `data/config.json`，无需手填 appId/secret。日记群、主题群、私聊等 chat 绑定也写在这个文件里，重建 `data/app.db` 不会丢群绑定。
+`pnpm dev` 设了 `PERSONAL_AGENT_DEV=1` 并用 `tsx watch` 热重载。首次运行若无飞书配置，终端会渲染二维码，用飞书 App 扫码即可创建/授权应用，凭据自动写入 `data/lark_config.json`，无需手填 appId/secret。日记群、主题群、私聊等 chat 绑定也写在这个文件里，重建 `data/app.db` 不会丢群绑定。
 
 ## 配置 LLM
 
 两处配合：
 
-- `data/llm-providers.json` —— 声明 provider、模型、路由。`apiKeyEnv` 指向环境变量名。
+- `data/setting.json` —— 声明 provider、模型、路由和运行默认值。`apiKeyEnv` 指向环境变量名。
 - `.env` —— 填上面 `apiKeyEnv` 对应的 key（如 `ANTHROPIC_API_KEY=sk-ant-...`）。
 
-路由 `companion`（日常对话）和 `weekly`（周度合并）各自映射到一个 `model_profile`。换模型只改这个 JSON，不动代码。
+路由 `companion`（日常对话）和 `weekly`（周度合并）各自映射到一个 `model_profile`。换模型只改 `setting.json`，不动代码。
 
 ## 日常开发
 
@@ -44,7 +44,7 @@ pnpm dev
 
 ## 日志
 
-统一走 `src/log.ts`，格式 `MM-DD HH:mm:ss.SSS LEVEL [scope] …`。开发态打到终端，同时按上海日期写入 `data/logs/YYYY-MM-DD.log`。
+统一走 `src/log.ts`，格式 `MM-DD HH:mm:ss.SSS LEVEL [scope] …`。开发态打到终端，同时按 `setting.time.timezone` 写入 `data/logs/YYYY-MM-DD.log`。
 
 按级别过滤：
 
@@ -58,7 +58,7 @@ LOG_LEVEL=debug pnpm dev   # debug | info（默认） | warn | error
 
 ## 会话文件
 
-Agent transcript 由 pi-agent-core 的 JSONL session 仓库维护。仓库会按 `cwd` 分桶，早期文件夹名如 `--Users-caidongmeng-Documents-Personal-PersonalAgent--` 是把绝对 cwd 编码后的结果；现在本应用固定使用逻辑分桶 `--personal-agent--`。新 session 文件名使用上海时间，例如 `2026-06-19T01-23-36-218+08-00_<session_id>.jsonl`。
+Agent transcript 由 pi-agent-core 的 JSONL session 仓库维护。仓库会按 `cwd` 分桶，早期文件夹名如 `--Users-caidongmeng-Documents-Personal-PersonalAgent--` 是把绝对 cwd 编码后的结果；现在本应用固定使用逻辑分桶 `--personal-agent--`。新 session 文件名使用 `setting.time.timezone` 对应的本地时间，例如 `2026-06-19T01-23-36-218+08-00_<session_id>.jsonl`。
 
 ## 数据库
 

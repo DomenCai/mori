@@ -1,6 +1,6 @@
 # 配置参考
 
-这份文档集中说明 Personal Agent 的所有配置：文件在哪、各管什么、怎么改。安装与守护运行见 [CLI 使用指南](cli.md)，本地开发见 [开发指南](development.md)，功能总览见 [文档总览](index.md)。
+这份文档集中说明 Personal Agent 的运行配置：文件在哪、各管什么、怎么改。安装与守护运行见 [CLI 使用指南](cli.md)，本地开发见 [开发指南](development.md)，功能总览见 [文档总览](index.md)。
 
 ## 数据根（ROOT）
 
@@ -11,23 +11,21 @@
 | 生产 | 正常运行 CLI | `~/.personal-agent` |
 | 开发 | `pnpm dev`（已设 `PERSONAL_AGENT_DEV=1`） | 项目内 `./data` |
 
-**生产**模式下，用户可改的文件（`.env` / `llm-providers.json` / `agent/`）首次缺失时会从仓库内置模板自动 seed 一份到 ROOT，之后改 ROOT 里的副本。**开发**模式直接读写仓库原位文件，改完即时生效，不污染 `~/.personal-agent`。
-
-下文路径以生产模式 `~/.personal-agent/` 为例；开发模式对应到 `./data/`（提示词在仓库根的 `agent/`）。
+生产模式下，用户可改的 `.env`、`setting.json` 和 `agent/` 首次缺失时会从仓库模板 seed 到 ROOT，之后改 ROOT 里的副本。开发模式直接读写仓库原位文件；真实 `data/setting.json`、`data/lark_config.json`、`data/schedules.json` 都是私有运行配置，不提交。
 
 ## 配置文件一览
 
-| 文件 | 谁生成 | 内容 | 要不要手改 |
+| 文件 | 谁写入 | 内容 | 规则 |
 |---|---|---|---|
-| `config.json` | 首次扫码向导 + 运行时自动更新 | 飞书凭据、owner、chat 绑定 | 通常不用手填 |
-| `schedules.json` | 可选手写覆盖 + `/schedules` 卡片动作 | 定时任务启停、cron 覆盖、script 任务定义 | 按需 |
-| `.env` | 模板 seed | LLM API key | **要填** |
-| `llm-providers.json` | 模板 seed | provider / 模型 / 路由 | 按需 |
-| `agent/*.md` | 模板 seed | 提示词 | 按需 |
+| `setting.json` | 人手编辑；首次缺失由 `data/setting.example.json` seed | LLM provider、模型路由、时区、会话策略、HTTP 抓取、script 默认限制、knowledge index 周期 | 运行时只读 |
+| `lark_config.json` | 首次扫码向导 + 运行时自动更新 | 飞书凭据、owner、chat 绑定 | 只放飞书相关状态 |
+| `schedules.json` | 人手编辑 + `/schedules` 卡片动作 | 定时任务启停、cron 覆盖、script 任务定义 | 不存运行历史 |
+| `.env` | 模板 seed 后人手编辑 | LLM API key | 只放 secret value |
+| `agent/*.md` | 模板 seed 后人手编辑 | 提示词与策略文本 | 重启后生效 |
 
-## 飞书凭据 `config.json`
+## 飞书凭据 `lark_config.json`
 
-首次前台运行 `personal-agent run`（或 `pnpm dev`）会渲染二维码，飞书扫码后自动创建 / 授权应用，凭据写入此文件，**无需手填 appId / secret**。
+首次前台运行 `personal-agent run`（或 `pnpm dev`）会渲染二维码，飞书扫码后自动创建 / 授权应用，凭据写入 `lark_config.json`。
 
 字段（见 `LarkConfig`）：
 
@@ -38,76 +36,84 @@
 | `ownerOpenId` | 主人 open_id；扫码时飞书没返回的话，由第一条私聊消息绑定 |
 | `chatBindings` | 日记群、主题群、私聊等 chat 的类型绑定 |
 
-`chatBindings` 放在 `config.json` 而不是 `app.db`，这样重建数据库不会丢已创建群的路由关系。文件权限自动设为 `0600`，**不要提交到 git**。
+`lark_config.json` 不保存 LLM、session policy、script timeout 或 schedule definition。会话策略在 `setting.json`。
 
-### sessionPolicy
+## LLM 与模型路由 `setting.json`
 
-`config.json` 可覆盖会话自动关闭策略；缺省值由代码补齐：
+`.env` 只填 key 值；`setting.json` 通过 `apiKeyEnv` 引用环境变量名：
 
-```jsonc
-"sessionPolicy": {
-  "diary":  { "autoClose": true,  "idleMinutes": 60 },
-  "dm":     { "autoClose": true,  "idleMinutes": 120 },
-  "thread": { "autoClose": true,  "idleMinutes": 30 },
-  "topic":  { "autoClose": false }
-}
-```
-
-清理定时器每 5 分钟读取这份策略并关闭空闲 scope；关闭前会先蒸馏需要收尾的 DM / thread / topic 会话片段。详见 [会话与冷却规则](sessions.md)。
-
-## LLM key `.env`
-
-填 `llm-providers.json` 里 `apiKeyEnv` 指向的环境变量。默认配置用 Anthropic：
-
-```
+```env
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-换 provider 就填对应的 key 名。`.env` 在任何环境变量读取之前加载。
-
-可选：`LOG_LEVEL=debug`（`debug` | `info` 默认 | `warn` | `error`）临时调日志级别。
-
-## 模型路由 `llm-providers.json`
-
-换模型、换供应商只动这个 JSON，不碰代码。三段结构：
+`setting.llm` 分三段：
 
 ```json
 {
-  "providers": {
-    "anthropic": {
-      "type": "anthropic",
-      "baseUrl": "https://api.anthropic.com",
-      "apiKeyEnv": "ANTHROPIC_API_KEY",
-      "reasoning": false,
-      "contextWindow": 200000,
-      "maxTokens": 8192
+  "llm": {
+    "providers": {
+      "main": {
+        "api": "anthropic-messages",
+        "baseUrl": "https://api.anthropic.com",
+        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "headers": {},
+        "request": {
+          "cacheRetention": "long"
+        },
+        "models": {
+          "claude-sonnet-4-20250514": {
+            "name": "Claude Sonnet 4",
+            "input": ["text"],
+            "reasoning": false,
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        }
+      }
+    },
+    "model_profiles": {
+      "normal": { "provider": "main", "model": "claude-sonnet-4-20250514" },
+      "strong": { "provider": "main", "model": "claude-sonnet-4-20250514" }
+    },
+    "routes": {
+      "companion": "normal",
+      "weekly": { "profile": "strong", "thinkingLevel": "medium" }
     }
-  },
-  "model_profiles": {
-    "companion": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "strong":    { "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
-  },
-  "routes": {
-    "companion": "companion",
-    "weekly": "strong"
   }
 }
 ```
 
-- **providers** —— 一个供应商怎么连。`type` 取 `anthropic` / `openai_response` / `openai_completions` / `xai_responses`；`apiKeyEnv` 指向 `.env` 里的 key 名；`baseUrl`、`reasoning`、`contextWindow`(默认 200000)、`maxTokens`(默认 8192)、`headers`、`input` 可选。
-- **model_profiles** —— 给"某个 provider 的某个具体模型"起个名字。
-- **routes** —— 把业务路由映射到 profile。两条固定路由：
+- `providers` 描述 endpoint 怎么连，以及 endpoint 下有哪些模型。`api` 直接使用 pi-ai API surface，例如 `anthropic-messages`、`openai-responses`、`openai-completions`。
+- `providers.<name>.request.cacheRetention` 会作为 harness stream option 生效。
+- `models` 是模型事实表：`name`、`input`、`reasoning`、`contextWindow`、`maxTokens`，`cost` 可选，缺省按 0 合成。
+- `model_profiles` 只允许配置 `provider` 和 `model`。
+- `routes` 只允许 profile 字符串，或 `{ "profile": "...", "thinkingLevel": "..." }`。
 
-  | 路由 | 用途 |
-  |---|---|
-  | `companion` | 日常对话、记日记 |
-  | `weekly` | 周度合并（更强模型） |
+运行时只校验当前 route 会用到的 provider、profile、model 和 key，不做全量 lint。
 
-举例：要让日常对话换成另一个模型，改 `model_profiles.companion.model` 即可；要让两条路由用不同供应商，各自指向不同 profile。
+## 时间、会话与运行默认值
 
-## 提示词 `agent/`
+`setting.time.timezone` 是全局业务时区，必须是 IANA timezone，例如 `Asia/Shanghai` 或 `America/Los_Angeles`。缺失或无效都会启动失败，不会静默回退系统时区。它影响 cron、daily memory 自然日、日志文件日期、session 文件名、日期 key 和周 key。
 
-`soul.md` / `response_style.md` / `memory_policy.md` 等纯 Markdown，定义 Agent 的人格、回复风格、记忆策略。直接编辑，开发态即时生效，生产态重启进程后生效。
+`setting.sessions` 控制空闲会话清理：
+
+```json
+{
+  "sessions": {
+    "sweepIntervalMs": 300000,
+    "policies": {
+      "diary": { "autoClose": true, "idleMinutes": 60 },
+      "dm": { "autoClose": true, "idleMinutes": 120 },
+      "thread": { "autoClose": true, "idleMinutes": 30 },
+      "topic": { "autoClose": false }
+    }
+  }
+}
+```
+
+`setting.script.defaults` 是 script schedule 的默认 timeout 和 worker `resourceLimits`。单个 script 可在 `schedules.json` 的 `runtime` 里覆盖。
+
+`setting.http.fetch` 控制 `fetch_article` 的 `timeoutMs` 和 `userAgent`。`setting.knowledge.index.checkIntervalMs` 控制 knowledge index 后台评估周期。
 
 ## 定时任务 `schedules.json`
 
@@ -123,17 +129,6 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 `/schedules` 会读取合并后的配置，并把启停状态写回 `schedules.json` 的覆盖层。任务行为、script 契约和投递流程见 [定时任务](schedules.md)。
 
-## 硬编码参数（非配置）
+## 保留为代码规则的内容
 
-少数运行参数目前写死在代码里，改它们需要改源码并重新 build：
-
-| 参数 | 值 | 位置 |
-|---|---|---|
-| 冷却扫描周期 | 5 分钟 | `src/main.ts` |
-| knowledge index 评估周期 | 1 小时 | `src/schedule/cron.ts` |
-
-各会话类型的空闲关闭时长由 `config.json.sessionPolicy` 控制。
-
-## 升级时配置怎么办
-
-`~/.personal-agent/` 下的配置和数据**不随升级覆盖**。重装新版本后这些文件原样保留；只有首次缺失时才会从模板 seed。
+安全边界和内部产品策略不放进 `setting.json`：script 只允许 `.mjs`、路径不能越界；vault 路径和文件权限；chatType 可用工具集合；Feishu 卡片展示截断；`memory.*`；知识地图 prompt 预算；`grep` 结果上限；SQLite schema 与检索策略。

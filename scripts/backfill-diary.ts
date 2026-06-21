@@ -8,7 +8,7 @@ import type { IngestedMessage } from "../src/ingest/message.js";
 import { distillDiaryEntry } from "../src/diary/distill.js";
 import { runDailyMemoryForDate } from "../src/memory/daily-memory.js";
 import { runWeeklyConsolidationForWindow } from "../src/memory/consolidation.js";
-import { shanghaiDateStart, shanghaiDateKey } from "../src/utils.js";
+import { businessDateStart, businessDateKey, weekKey } from "../src/utils.js";
 
 type Granularity = "per-section" | "per-day";
 
@@ -16,6 +16,8 @@ interface CliOptions {
   dir: string;
   granularity: Granularity;
   dryRun: boolean;
+  weekStart?: string;
+  skipWeekly: boolean;
 }
 
 interface DiaryImportEntry {
@@ -32,17 +34,36 @@ function parseArgs(argv: string[]): CliOptions | "help" {
     throw new Error("--per-day 和 --per-section 只能选择一个");
   }
   const dryRun = argv.includes("--dry-run");
-  const dir = argv.find((arg) => !arg.startsWith("--")) ?? "diary-data";
+  const skipWeekly = argv.includes("--skip-weekly");
+  let weekStart: string | undefined;
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--week-start") {
+      weekStart = argv[++i];
+    } else if (arg.startsWith("--week-start=")) {
+      weekStart = arg.slice("--week-start=".length);
+    } else if (!arg.startsWith("--")) {
+      positional.push(arg);
+    }
+  }
+  if (weekStart && !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+    throw new Error("--week-start 必须是 YYYY-MM-DD");
+  }
+  const dir = positional[0] ?? "diary-data";
   return {
     dir,
     granularity: perDay ? "per-day" : "per-section",
     dryRun,
+    weekStart,
+    skipWeekly,
   };
 }
 
 function printHelp(): void {
   console.log(`Usage:
   PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts [diary-dir] [--per-section|--per-day] [--dry-run]
+  PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts [diary-dir] --week-start YYYY-MM-DD [--skip-weekly]
 
 Default:
   diary-dir     diary-data
@@ -50,6 +71,8 @@ Default:
 
 Notes:
   - Full backfill requires a fresh target DB and will abort if memory tables are non-empty.
+  - --week-start only processes that ISO week and can be used to advance a non-fresh DB week by week.
+  - --skip-weekly imports and runs daily memory for the week without writing weekly_summaries/profile.
   - --dry-run only parses Markdown and prints counts; it does not open or write the DB.`);
 }
 
@@ -221,10 +244,10 @@ function groupByDate(entries: DiaryImportEntry[]): Map<string, DiaryImportEntry[
 
 function eachDateKey(startDateKey: string, endDateKey: string): string[] {
   const dates: string[] = [];
-  let cursor = shanghaiDateStart(startDateKey);
-  const end = shanghaiDateStart(endDateKey);
+  let cursor = businessDateStart(startDateKey);
+  const end = businessDateStart(endDateKey);
   while (cursor.getTime() <= end.getTime()) {
-    dates.push(shanghaiDateKey(cursor));
+    dates.push(businessDateKey(cursor));
     cursor = new Date(cursor.getTime() + 86_400_000);
   }
   return dates;
@@ -237,8 +260,8 @@ function eachIsoWeekWindow(startDateKey: string, endDateKey: string): Array<{ si
   while (weekStart <= lastWeekStart) {
     const nextWeekStart = addDaysDateKey(weekStart, 7);
     windows.push({
-      since: shanghaiDateStart(weekStart).toISOString(),
-      until: shanghaiDateStart(nextWeekStart).toISOString(),
+      since: businessDateStart(weekStart).toISOString(),
+      until: businessDateStart(nextWeekStart).toISOString(),
     });
     weekStart = nextWeekStart;
   }
@@ -294,6 +317,142 @@ function printStats(db: ReturnType<typeof getDb>): void {
   console.log(`profile revisions: ${scalar("SELECT COUNT(*) AS count FROM profile_revisions")}`);
 }
 
+function count(db: ReturnType<typeof getDb>, sql: string, ...params: unknown[]): number {
+  const row = db.prepare(sql).get(...params) as { count: number };
+  return row.count;
+}
+
+function printWindowStats(
+  db: ReturnType<typeof getDb>,
+  opts: {
+    weekKey: string;
+    since: string;
+    until: string;
+    startDateKey: string;
+    endDateKey: string;
+  },
+): void {
+  console.log(
+    `Week stats: messages=${count(db, "SELECT COUNT(*) AS count FROM messages WHERE source = 'import' AND occurred_at >= ? AND occurred_at < ?", opts.since, opts.until)}, ` +
+      `episodes=${count(db, "SELECT COUNT(*) AS count FROM episodes WHERE occurred_at >= ? AND occurred_at < ?", opts.since, opts.until)}, ` +
+      `daily=${count(db, "SELECT COUNT(*) AS count FROM daily_memory_runs WHERE date_key >= ? AND date_key <= ?", opts.startDateKey, opts.endDateKey)}, ` +
+      `weekly=${count(db, "SELECT COUNT(*) AS count FROM weekly_summaries WHERE week_key = ?", opts.weekKey)}, ` +
+      `profileRevisions=${count(db, "SELECT COUNT(*) AS count FROM profile_revisions WHERE created_at >= ? AND created_at < ?", opts.since, opts.until)}`,
+  );
+}
+
+async function importEntries(opts: {
+  db: ReturnType<typeof getDb>;
+  harnessManager: HarnessManager;
+  clock: FixedMutableClock;
+  entries: DiaryImportEntry[];
+}): Promise<void> {
+  let imported = 0;
+  let skipped = 0;
+  const groups = groupByDate(opts.entries);
+  for (const [dateKey, items] of groups) {
+    const sessionScope = `import:diary:${dateKey}`;
+    for (const item of items) {
+      const existingEpisode = opts.db
+        .prepare("SELECT 1 FROM episodes WHERE source_message_id = ?")
+        .get(item.message.id);
+      if (existingEpisode) {
+        skipped++;
+        console.log(`[import skip] ${item.message.id}`);
+        continue;
+      }
+      opts.clock.set(new Date(item.message.occurredAt));
+      const result = await distillDiaryEntry({
+        harnessManager: opts.harnessManager,
+        message: item.message,
+        sessionScope,
+      });
+      imported++;
+      const marker = result.fallbackReason ? "fallback" : "ok";
+      console.log(`[import ${imported}/${opts.entries.length}] ${item.message.id} ${marker}`);
+    }
+    await opts.harnessManager.resetSession(sessionScope);
+  }
+  console.log(`Import done: imported=${imported}, skipped=${skipped}`);
+}
+
+async function runWindow(opts: {
+  db: ReturnType<typeof getDb>;
+  harnessManager: HarnessManager;
+  clock: FixedMutableClock;
+  entries: DiaryImportEntry[];
+  firstDateKey: string;
+  lastDateKey: string;
+  since: string;
+  until: string;
+  skipWeekly?: boolean;
+}): Promise<void> {
+  const weekStartDateKey = businessDateKey(new Date(opts.since));
+  const weekEndDateKey = businessDateKey(new Date(new Date(opts.until).getTime() - 1));
+  const startDateKey = maxDateKey(weekStartDateKey, opts.firstDateKey);
+  const endDateKey = minDateKey(weekEndDateKey, opts.lastDateKey);
+  const weekEntries = opts.entries.filter(
+    (entry) =>
+      entry.message.occurredAt >= opts.since &&
+      entry.message.occurredAt < opts.until,
+  );
+  const wk = weekKey(new Date(opts.since));
+
+  console.log(`\nWeek ${wk}: ${weekStartDateKey} -> ${businessDateKey(new Date(opts.until))}`);
+  console.log(`Window UTC: ${opts.since} -> ${opts.until}`);
+  console.log(`Diary entries in week: ${weekEntries.length}`);
+  console.log(`Daily dates: ${startDateKey} -> ${endDateKey}`);
+
+  if (startDateKey <= endDateKey) {
+    for (const dateKey of eachDateKey(startDateKey, endDateKey)) {
+      const dayEntries = weekEntries.filter((entry) => entry.dateKey === dateKey);
+      console.log(`\nDay ${dateKey}: diary entries=${dayEntries.length}`);
+      if (dayEntries.length > 0) {
+        await importEntries({
+          db: opts.db,
+          harnessManager: opts.harnessManager,
+          clock: opts.clock,
+          entries: dayEntries,
+        });
+      }
+      await runDailyMemoryForDate({
+        db: opts.db,
+        harnessManager: opts.harnessManager,
+        dateKey,
+        clock: opts.clock,
+        nudge: false,
+      });
+    }
+  }
+
+  const existingWeekly = opts.db
+    .prepare("SELECT 1 FROM weekly_summaries WHERE week_key = ?")
+    .get(wk);
+  if (opts.skipWeekly) {
+    console.log(`[weekly skip] ${wk} skipped by --skip-weekly`);
+  } else if (existingWeekly) {
+    console.log(`[weekly skip] ${wk} already exists`);
+  } else {
+    await runWeeklyConsolidationForWindow({
+      db: opts.db,
+      harnessManager: opts.harnessManager,
+      clock: opts.clock,
+      since: opts.since,
+      until: opts.until,
+      sendCards: false,
+      friendRound: false,
+    });
+  }
+
+  printWindowStats(opts.db, {
+    weekKey: wk,
+    since: opts.since,
+    until: opts.until,
+    startDateKey,
+    endDateKey,
+  });
+}
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed === "help") {
@@ -317,7 +476,9 @@ async function main(): Promise<void> {
   try {
     db.pragma("busy_timeout = 10000");
     initDb(db, clock);
-    assertFreshDb(db);
+    if (!parsed.weekStart) {
+      assertFreshDb(db);
+    }
 
     const llmConfig = loadLlmConfig();
     const harnessManager = new HarnessManager({
@@ -330,48 +491,35 @@ async function main(): Promise<void> {
       },
     });
 
-    const groups = groupByDate(entries);
-    let imported = 0;
-    for (const [dateKey, items] of groups) {
-      const sessionScope = `import:diary:${dateKey}`;
-      for (const item of items) {
-        clock.set(new Date(item.message.occurredAt));
-        const result = await distillDiaryEntry({
-          harnessManager,
-          message: item.message,
-          sessionScope,
-        });
-        imported++;
-        const marker = result.fallbackReason ? "fallback" : "ok";
-        console.log(`[import ${imported}/${entries.length}] ${item.message.id} ${marker}`);
-      }
-      await harnessManager.resetSession(sessionScope);
-    }
-
-    for (const window of eachIsoWeekWindow(firstDateKey, lastDateKey)) {
-      const startDateKey = maxDateKey(shanghaiDateKey(new Date(window.since)), firstDateKey);
-      const endDateKey = minDateKey(
-        shanghaiDateKey(new Date(new Date(window.until).getTime() - 1)),
-        lastDateKey,
-      );
-      for (const dateKey of eachDateKey(startDateKey, endDateKey)) {
-        await runDailyMemoryForDate({
-          db,
-          harnessManager,
-          dateKey,
-          clock,
-          nudge: false,
-        });
-      }
-
-      await runWeeklyConsolidationForWindow({
+    if (parsed.weekStart) {
+      const since = businessDateStart(parsed.weekStart).toISOString();
+      const until = businessDateStart(addDaysDateKey(parsed.weekStart, 7)).toISOString();
+      await runWindow({
         db,
         harnessManager,
         clock,
+        entries,
+        firstDateKey,
+        lastDateKey,
+        since,
+        until,
+        skipWeekly: parsed.skipWeekly,
+      });
+      printStats(db);
+      return;
+    }
+
+    for (const window of eachIsoWeekWindow(firstDateKey, lastDateKey)) {
+      await runWindow({
+        db,
+        harnessManager,
+        clock,
+        entries,
+        firstDateKey,
+        lastDateKey,
         since: window.since,
         until: window.until,
-        sendCards: false,
-        friendRound: false,
+        skipWeekly: parsed.skipWeekly,
       });
     }
 

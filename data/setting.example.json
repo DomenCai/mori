@@ -1,0 +1,81 @@
+{
+  "llm": {
+    "providers": {
+      "main": {
+        "api": "anthropic-messages",
+        "baseUrl": "https://api.anthropic.com",
+        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "headers": {},
+        "request": {
+          "cacheRetention": "long"
+        },
+        "models": {
+          "claude-sonnet-4-20250514": {
+            "name": "Claude Sonnet 4",
+            "input": ["text"],
+            "reasoning": false,
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        }
+      }
+    },
+    "model_profiles": {
+      "normal": {
+        "provider": "main",
+        "model": "claude-sonnet-4-20250514"
+      },
+      "strong": {
+        "provider": "main",
+        "model": "claude-sonnet-4-20250514"
+      }
+    },
+    "routes": {
+      "companion": "normal",
+      "weekly": "strong"
+    }
+  },
+  "time": {
+    "timezone": "Asia/Shanghai"
+  },
+  "sessions": {
+    "sweepIntervalMs": 300000,
+    "policies": {
+      "diary": {
+        "autoClose": true,
+        "idleMinutes": 60
+      },
+      "dm": {
+        "autoClose": true,
+        "idleMinutes": 120
+      },
+      "thread": {
+        "autoClose": true,
+        "idleMinutes": 30
+      },
+      "topic": {
+        "autoClose": false
+      }
+    }
+  },
+  "script": {
+    "defaults": {
+      "timeoutMs": 60000,
+      "resourceLimits": {
+        "maxOldGenerationSizeMb": 128,
+        "maxYoungGenerationSizeMb": 32
+      }
+    }
+  },
+  "http": {
+    "fetch": {
+      "timeoutMs": 30000,
+      "userAgent": "PersonalAgent/1.0"
+    }
+  },
+  "knowledge": {
+    "index": {
+      "checkIntervalMs": 3600000
+    }
+  }
+}

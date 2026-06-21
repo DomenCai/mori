@@ -32,9 +32,9 @@ pnpm link --global
 personal-agent run
 ```
 
-终端渲染二维码，用飞书 App 扫码创建/授权应用，凭据写入 `~/.personal-agent/config.json`。完成后 `Ctrl+C` 退出。
+终端渲染二维码，用飞书 App 扫码创建/授权应用，凭据写入 `~/.personal-agent/lark_config.json`。完成后 `Ctrl+C` 退出。
 
-再配置 LLM key：编辑 `~/.personal-agent/.env`，填 `~/.personal-agent/llm-providers.json` 里 `apiKeyEnv` 对应的 key。这两个文件首次运行时会从仓库默认模板自动生成。
+再配置 LLM key：编辑 `~/.personal-agent/.env`，填 `~/.personal-agent/setting.json` 里 `apiKeyEnv` 对应的 key。`setting.json` 首次缺失时会从仓库默认模板自动生成。
 
 ## 守护运行
 
@@ -53,18 +53,18 @@ personal-agent run       # 前台运行（调试 / 首次扫码用）
 
 | 路径 | 内容 |
 |---|---|
-| `config.json` | 飞书凭据、owner、chat 绑定 |
+| `lark_config.json` | 飞书凭据、owner、chat 绑定 |
+| `setting.json` | LLM、时区、会话、HTTP、script 和 knowledge index 配置 |
 | `.env` | LLM API key |
-| `llm-providers.json` | provider / 模型 / 路由配置 |
 | `agent/` | 提示词（`soul.md` 等），可按需修改 |
 | `app.db` | SQLite 数据库 |
-| `sessions/` | 会话状态，JSONL 文件按上海时间命名 |
-| `logs/YYYY-MM-DD.log` | 运行日志，按上海日期切分 |
+| `sessions/` | 会话状态，JSONL 文件按业务时区命名 |
+| `logs/YYYY-MM-DD.log` | 运行日志，按业务时区切分 |
 | `agent.pid` | 运行中进程的 pid |
 
 ## 日志
 
-运行时 stdout/stderr 会按上海日期写入 `~/.personal-agent/logs/YYYY-MM-DD.log`。前台 `run` 会同时保留终端输出；后台 `start` 只写日志文件。
+运行时 stdout/stderr 会按 `setting.time.timezone` 写入 `~/.personal-agent/logs/YYYY-MM-DD.log`。前台 `run` 会同时保留终端输出；后台 `start` 只写日志文件。
 
 ```bash
 tail -f ~/.personal-agent/logs/$(date +%F).log

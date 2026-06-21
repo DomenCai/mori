@@ -21,7 +21,7 @@
 
 ```bash
 pnpm install
-# 配置 LLM：编辑 data/llm-providers.json 选模型，在 .env 填对应的 API key
+# 配置 LLM：编辑 data/setting.json 选模型，在 .env 填对应的 API key
 pnpm dev            # 首次会弹出二维码，用飞书 App 扫码创建/授权应用
 ```
 

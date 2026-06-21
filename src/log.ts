@@ -1,9 +1,9 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { shanghaiDateKey, logTimestamp } from "./utils.js";
+import { businessDateKey, logTimestamp } from "./utils.js";
 
 // 极简结构化日志：时间戳 + level + scope。输出到 stdout/stderr。
-// run/dev 模式会安装 stdout/stderr tee，按上海日期写入 logs/YYYY-MM-DD.log。
+// run/dev 模式会安装 stdout/stderr tee，按业务时区写入 logs/YYYY-MM-DD.log。
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
 type Level = keyof typeof LEVELS;
@@ -12,7 +12,7 @@ const threshold = LEVELS[process.env.LOG_LEVEL as Level] ?? LEVELS.info;
 let dailyFileLoggingInstalled = false;
 
 export function dailyLogPath(logsDir: string, date = new Date()): string {
-  return join(logsDir, `${shanghaiDateKey(date)}.log`);
+  return join(logsDir, `${businessDateKey(date)}.log`);
 }
 
 export function installDailyFileLogging(logsDir: string): string {

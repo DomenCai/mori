@@ -12,8 +12,8 @@ import { basename, dirname, extname, join, relative } from "node:path";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import { parse, stringify } from "yaml";
-import { knowledgeIndexPath, vaultDir } from "../config.js";
-import { nowISO, shanghaiDateKey } from "../utils.js";
+import { knowledgeIndexPath, loadSetting, vaultDir } from "../config.js";
+import { nowISO, businessDateKey } from "../utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -209,35 +209,43 @@ export class VaultService {
 }
 
 export async function fetchArticle(url: string): Promise<KnowledgeArticle> {
-  const response = await fetch(url, {
-    headers: {
-      "user-agent": "PersonalAgent/1.0",
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`抓取失败 ${response.status}: ${url}`);
-  }
-  const html = await response.text();
-  const title = extractTitle(html) ?? url;
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, "\n")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  const { timeoutMs, userAgent } = loadSetting().http.fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "user-agent": userAgent,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`抓取失败 ${response.status}: ${url}`);
+    }
+    const html = await response.text();
+    const title = extractTitle(html) ?? url;
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, "\n")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
 
-  return {
-    title,
-    domain: "未分类",
-    tags: [],
-    brief: text.slice(0, 160) || title,
-    body: `# ${title}\n\n${text}`,
-    source_url: url,
-  };
+    return {
+      title,
+      domain: "未分类",
+      tags: [],
+      brief: text.slice(0, 160) || title,
+      body: `# ${title}\n\n${text}`,
+      source_url: url,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function slugify(input: string): string {
@@ -328,7 +336,7 @@ function frontmatterBounds(raw: string): {
 }
 
 function monthKey(date = new Date()): string {
-  return shanghaiDateKey(date).slice(0, 7);
+  return businessDateKey(date).slice(0, 7);
 }
 
 function uniquePath(path: string): string {

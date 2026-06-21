@@ -30,7 +30,7 @@
 | 周度合并 | 定时任务、`/consolidate` | [定时任务](schedules.md)、[记忆模型](memory-model.md) |
 | 知识收藏与检索 | 自然语言收藏 URL、知识工具、通知群反应 | [知识库](knowledge-base.md) |
 | Script 定时投喂 | `schedules.json` + `.mjs` 脚本 | [定时任务](schedules.md)、[配置参考](configuration.md) |
-| 模型/provider 切换 | `llm-providers.json` + `.env` | [配置参考](configuration.md) |
+| 模型/provider 切换 | `setting.json` + `.env` | [配置参考](configuration.md) |
 | 本地调试和数据库查看 | `pnpm dev`、`data/app.db`、日志 | [开发指南](development.md) |
 
 ## 文档分工

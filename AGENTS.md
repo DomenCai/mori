@@ -27,4 +27,4 @@ The repository currently uses Conventional Commits, for example `feat: 初始化
 
 ## Security & Configuration Tips
 
-Do not commit `.env`, `data/config.json`, `data/app.db*`, `data/sessions/`, logs, or `diary-data/`. LLM keys come from `.env` using names such as `ANTHROPIC_API_KEY`; Feishu credentials are created by the first-run registration wizard and stored in runtime config.
+Do not commit `.env`, `data/setting.json`, `data/lark_config.json`, `data/schedules.json`, `data/app.db*`, `data/sessions/`, logs, or `diary-data/` — the repo ships only `data/setting.example.json` as a template. `setting.json` holds LLM provider/model/route config and references API keys by env-var name (`apiKeyEnv`, e.g. `ANTHROPIC_API_KEY`); the actual keys live in `.env`. Feishu credentials are created by the first-run registration wizard and stored in `data/lark_config.json`.

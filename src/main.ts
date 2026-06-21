@@ -4,10 +4,10 @@ import {
   loadLarkConfig,
   saveLarkConfig,
   loadLlmConfig,
+  loadSetting,
   resolveModelRoute,
   sessionsDir,
   logsDir,
-  withLarkConfigDefaults,
   type LarkConfig,
 } from "./config.js";
 import { initChannel } from "./lark/channel.js";
@@ -37,6 +37,7 @@ const bootLog = logger("boot");
 const larkLog = logger("lark");
 
 async function runForeground() {
+  const setting = loadSetting();
   const logFile = installDailyFileLogging(logsDir);
   bootLog.info(`日志写入: ${logFile}`);
 
@@ -55,9 +56,8 @@ async function runForeground() {
   let loaded = loadLarkConfig();
   if (!loaded) {
     loaded = await runRegistrationWizard();
-    loaded = withLarkConfigDefaults(loaded);
     saveLarkConfig(loaded);
-    bootLog.info("飞书配置已保存到 ~/.personal-agent/config.json");
+    bootLog.info("飞书配置已保存到 lark_config.json");
   }
   const larkConfig: LarkConfig = loaded;
   const llmConfig = loadLlmConfig();
@@ -194,14 +194,14 @@ async function runForeground() {
   });
 
   // ── 5. 定时任务 ──
-  initSchedules(db, channel, harnessManager, registry);
+  initSchedules(db, channel, harnessManager, registry, setting);
 
   // ── 6. 空闲清理 ──
   setInterval(() => {
-    harnessManager.cleanupIdle(larkConfig.sessionPolicy!).catch((err) => {
+    harnessManager.cleanupIdle(setting.sessions.policies).catch((err) => {
       bootLog.error("空闲 scope 清理失败:", err);
     });
-  }, 5 * 60 * 1000);
+  }, setting.sessions.sweepIntervalMs);
 
   // ── 7. 启动 ──
   await channel.connect();

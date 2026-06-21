@@ -23,7 +23,7 @@ import {
   type ScriptSchedule,
 } from "./config.js";
 import { MessageService } from "../storage/messages.js";
-import { scriptDir } from "../config.js";
+import { scriptDir, type ScriptRuntimeConfig, type SettingConfig } from "../config.js";
 import {
   slugify,
   VaultService,
@@ -34,21 +34,22 @@ import { renderMarkdownCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 
 const log = logger("cron");
-const SCRIPT_TIMEOUT_MS = 60_000;
 
 export function initSchedules(
   db: Database.Database,
   channel: LarkChannel,
   harnessManager: HarnessManager,
   registry: ChatRegistry,
+  setting: SettingConfig,
 ): Cron[] {
   const jobs: Cron[] = [];
   const config = loadSchedulesConfig();
+  const timezone = setting.time.timezone;
 
   for (const schedule of config.schedules) {
     if (schedule.kind === "builtin" && schedule.cron) {
       jobs.push(
-        new Cron(schedule.cron, { timezone: "Asia/Shanghai" }, async () => {
+        new Cron(schedule.cron, { timezone }, async () => {
           if (!isScheduleEnabled(schedule.id)) {
             log.info(`跳过已停用 builtin: ${schedule.id}`);
             return;
@@ -63,7 +64,7 @@ export function initSchedules(
 
     if (schedule.kind === "script") {
       jobs.push(
-        new Cron(schedule.cron, { timezone: "Asia/Shanghai" }, async () => {
+        new Cron(schedule.cron, { timezone }, async () => {
           if (!isScheduleEnabled(schedule.id)) {
             log.info(`跳过已停用 script: ${schedule.id}`);
             return;
@@ -72,7 +73,13 @@ export function initSchedules(
           if (!current || current.kind !== "script") return;
           log.info(`触发 script: ${schedule.id}`);
           try {
-            await runScriptSchedule(current, channel, registry, db);
+            await runScriptSchedule(
+              current,
+              channel,
+              registry,
+              db,
+              setting.script.defaults,
+            );
           } catch (err) {
             log.error(`script ${schedule.id} 失败:`, err);
           }
@@ -98,7 +105,7 @@ export function initSchedules(
           log.error("知识地图刷新失败:", err);
         },
       );
-    }, 60 * 60 * 1000);
+    }, setting.knowledge.index.checkIntervalMs);
     if (knowledgeIndex.enabled) {
       runKnowledgeIndexIfNeeded(knowledgeIndex.trigger, harnessManager).catch((err) => {
         log.error("知识地图刷新失败:", err);
@@ -136,11 +143,15 @@ async function runScriptSchedule(
   channel: LarkChannel,
   registry: ChatRegistry,
   db: Database.Database,
+  scriptDefaults: ScriptRuntimeConfig,
 ): Promise<void> {
   const vault = new VaultService();
   const slug = deterministicSlug(schedule.id, runWindow(new Date()));
   const scriptPath = resolveScriptPath(schedule.script);
-  const article = await runUserScript(scriptPath);
+  const article = await runUserScript(
+    scriptPath,
+    mergeScriptRuntime(scriptDefaults, schedule.runtime),
+  );
   const writeResult = vault.writeInbox(schedule.deliver.inbox, slug, article);
   if (writeResult.existed) {
     log.info(`script ${schedule.id} 本窗口已投递，跳过: ${writeResult.path}`);
@@ -191,19 +202,19 @@ function getCurrentSchedule(scheduleId: string): ScheduleDefinition | undefined 
   return loadSchedulesConfig().schedules.find((schedule) => schedule.id === scheduleId);
 }
 
-function runUserScript(scriptPath: string): Promise<KnowledgeArticle> {
+function runUserScript(
+  scriptPath: string,
+  runtime: ScriptRuntimeConfig,
+): Promise<KnowledgeArticle> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./script-worker.js", import.meta.url), {
       workerData: { scriptPath },
-      resourceLimits: {
-        maxOldGenerationSizeMb: 128,
-        maxYoungGenerationSizeMb: 32,
-      },
+      resourceLimits: runtime.resourceLimits,
     });
     const timer = setTimeout(() => {
       worker.terminate().catch(() => {});
       reject(new Error(`script 超时：${basename(scriptPath)}`));
-    }, SCRIPT_TIMEOUT_MS);
+    }, runtime.timeoutMs);
 
     worker.once("message", (message: unknown) => {
       clearTimeout(timer);
@@ -229,6 +240,19 @@ function runUserScript(scriptPath: string): Promise<KnowledgeArticle> {
       }
     });
   });
+}
+
+function mergeScriptRuntime(
+  defaults: ScriptRuntimeConfig,
+  override?: Partial<ScriptRuntimeConfig>,
+): ScriptRuntimeConfig {
+  return {
+    timeoutMs: override?.timeoutMs ?? defaults.timeoutMs,
+    resourceLimits: {
+      ...defaults.resourceLimits,
+      ...override?.resourceLimits,
+    },
+  };
 }
 
 function validateScriptResult(value: unknown): KnowledgeArticle {

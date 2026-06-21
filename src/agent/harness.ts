@@ -2,6 +2,8 @@ import {
   AgentHarness,
   JsonlSessionRepo,
   type AgentTool,
+  type AgentHarnessStreamOptions,
+  type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Model } from "@earendil-works/pi-ai";
@@ -24,13 +26,11 @@ import { createUpdateProfileTool } from "./tools/update-profile.js";
 import { createSearchMemoryTool } from "./tools/search-memory.js";
 import { createSendCheckinTool } from "./tools/send-checkin.js";
 import { createKnowledgeTools } from "./tools/knowledge.js";
-import { genId, shanghaiFileTimestamp } from "../utils.js";
+import { genId, businessDateKey, businessFileTimestamp } from "../utils.js";
 import type { SessionPolicyConfig } from "../config.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import type { Clock } from "../clock.js";
 import { systemClock } from "../clock.js";
-
-const SESSION_CWD = "personal-agent";
 
 export interface HarnessEntry {
   harness: AgentHarness;
@@ -57,6 +57,8 @@ export interface HarnessModelRoute {
   name: "companion" | "weekly";
   model: Model<any>;
   apiKey: string;
+  streamOptions: AgentHarnessStreamOptions;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface HarnessManagerOptions {
@@ -94,7 +96,7 @@ export class HarnessManager {
       fs: this.env,
       sessionsRoot: opts.sessionsDir,
     });
-    this.installShanghaiSessionFileNames();
+    this.installSessionFileNames();
     this.diaryService = new DiaryService(opts.db, this.clock);
     this.memoryService = new MemoryService(opts.db, this.clock);
     this.messageService = new MessageService(opts.db, this.clock);
@@ -281,7 +283,9 @@ ${JSON.stringify(files, null, 2)}
     chatType: HarnessEntry["chatType"],
     opts: { runId?: string },
   ): Promise<HarnessEntry> {
-    const session = await this.repo.create({ cwd: SESSION_CWD });
+    const session = await this.repo.create({
+      cwd: `${chatType}/${businessDateKey().slice(0, 7)}`,
+    });
 
     const route =
       chatType === "consolidation" ||
@@ -336,7 +340,8 @@ ${JSON.stringify(files, null, 2)}
       activeToolNames,
       systemPrompt,
       getApiKeyAndHeaders: async () => ({ apiKey: route.apiKey }),
-      streamOptions: { cacheRetention: "long" },
+      streamOptions: route.streamOptions,
+      thinkingLevel: route.thinkingLevel,
     });
 
     if (isDiaryRound) {
@@ -365,8 +370,9 @@ ${JSON.stringify(files, null, 2)}
     return entry;
   }
 
-  private installShanghaiSessionFileNames(): void {
+  private installSessionFileNames(): void {
     const repo = this.repo as unknown as {
+      getSessionsRoot(): Promise<string>;
       getSessionDir(cwd: string): Promise<string>;
       createSessionFilePath(
         cwd: string,
@@ -374,13 +380,20 @@ ${JSON.stringify(files, null, 2)}
         timestamp: string,
       ): Promise<string>;
     };
-    const getSessionDir = repo.getSessionDir.bind(this.repo);
+    const getSessionsRoot = repo.getSessionsRoot.bind(this.repo);
+
+    // cwd 直接作为相对子路径（chatType/月份）嵌套分组，而不是被编码成扁平目录名。
+    repo.getSessionDir = async (cwd) => {
+      const joined = await this.env.joinPath([await getSessionsRoot(), cwd]);
+      if (!joined.ok) throw joined.error;
+      return joined.value;
+    };
 
     repo.createSessionFilePath = async (cwd, sessionId) => {
-      const sessionDir = await getSessionDir(cwd);
+      const sessionDir = await repo.getSessionDir(cwd);
       const joined = await this.env.joinPath([
         sessionDir,
-        `${shanghaiFileTimestamp()}_${sessionId}.jsonl`,
+        `${businessFileTimestamp()}_${sessionId}.jsonl`,
       ]);
       if (!joined.ok) throw joined.error;
       return joined.value;

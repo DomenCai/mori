@@ -45,7 +45,7 @@ episode 是检索索引和观察索引，不承担跨天叙事维护，也不预
 
 ## daily_memory：每日压缩回路
 
-`daily_memory` 每天 06:00（Asia/Shanghai）处理前一上海自然日，不补跑。它先做机械逻辑，再跑两个窄 agent：
+`daily_memory` 每天 06:00（按 `setting.time.timezone`）处理前一业务自然日，不补跑。它先做机械逻辑，再跑两个窄 agent：
 
 1. 机械收缩：无条件执行。active storyline 超过 21 天未活跃转 dormant；active 超过 12 条时，按最久未活跃优先转 dormant。
 2. dream_agent：有 fresh episodes 时，把新信号合并进 storylines。

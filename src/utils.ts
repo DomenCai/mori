@@ -1,16 +1,62 @@
 import { randomBytes } from "node:crypto";
 
-const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
-const SHANGHAI_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  timeZone: SHANGHAI_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
+let businessTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+let businessFormatter = createBusinessFormatter(businessTimeZone);
+
+function createBusinessFormatter(timeZone: string): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
+export function validateTimeZone(timeZone: string): void {
+  // Intl 对 undefined 不抛错而是静默用系统时区，必须先挡掉缺失/空值，否则
+  // setting.time.timezone 缺字段会悄悄回退本地时区，违背 fail-fast。
+  if (typeof timeZone !== "string" || !timeZone) {
+    throw new Error(`无效 timezone: ${timeZone}`);
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+  } catch {
+    throw new Error(`无效 timezone: ${timeZone}`);
+  }
+}
+
+export function setBusinessTimeZone(timeZone: string): void {
+  validateTimeZone(timeZone);
+  businessTimeZone = timeZone;
+  businessFormatter = createBusinessFormatter(timeZone);
+}
+
+export function getBusinessTimeZone(): string {
+  return businessTimeZone;
+}
+
+const OFFSET_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+
+function offsetFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = OFFSET_FORMATTER_CACHE.get(timeZone);
+  if (cached) return cached;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  OFFSET_FORMATTER_CACHE.set(timeZone, formatter);
+  return formatter;
+}
 
 export function genId(prefix = ""): string {
   const ts = Date.now().toString(36);
@@ -22,57 +68,113 @@ export function nowISO(): string {
   return new Date().toISOString();
 }
 
-function shanghaiParts(date: Date): Record<string, string> {
+function dateParts(date: Date, formatter: Intl.DateTimeFormat): Record<string, string> {
   return Object.fromEntries(
-    SHANGHAI_FORMATTER.formatToParts(date)
+    formatter.formatToParts(date)
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, part.value]),
   );
 }
 
-export function shanghaiDateKey(date = new Date()): string {
-  const parts = shanghaiParts(date);
+function businessParts(date: Date): Record<string, string> {
+  return dateParts(date, businessFormatter);
+}
+
+export function businessDateKey(date = new Date()): string {
+  const parts = businessParts(date);
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-export function shanghaiDateStart(dateKey: string): Date {
-  const [year, month, day] = dateKey.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day, -8, 0, 0, 0));
+function timeZoneOffsetMs(date: Date, timeZone: string): number {
+  const parts = dateParts(date, offsetFormatter(timeZone));
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  );
+  return asUtc - date.getTime();
 }
 
-export function shanghaiDateRange(dateKey: string): { startIso: string; endIso: string } {
-  const start = shanghaiDateStart(dateKey);
-  const end = new Date(start.getTime() + 86_400_000);
+export function businessDateStart(dateKey: string): Date {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const localMidnightAsUtc = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+  let candidate = new Date(
+    localMidnightAsUtc -
+      timeZoneOffsetMs(new Date(localMidnightAsUtc), businessTimeZone),
+  );
+  const corrected = new Date(localMidnightAsUtc - timeZoneOffsetMs(candidate, businessTimeZone));
+  if (corrected.getTime() !== candidate.getTime()) candidate = corrected;
+  // 已知限制：若配置时区恰在午夜发生 DST 跳变（本地 00:00 这一墙钟时刻不存在，
+  // 如 America/Sao_Paulo 历史规则），起点会落到前一天 23:00。Asia/Shanghai 无 DST，
+  // 常见时区也不受影响，暂不处理这一极窄边界。
+  return candidate;
+}
+
+export function businessDateRange(dateKey: string): { startIso: string; endIso: string } {
+  const start = businessDateStart(dateKey);
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const nextDateKey = formatDateKeyFromUtcDate(Date.UTC(year, month - 1, day + 1));
+  const end = businessDateStart(nextDateKey);
   return { startIso: start.toISOString(), endIso: end.toISOString() };
 }
 
-export function previousShanghaiDateKey(date = new Date()): string {
-  const todayStart = shanghaiDateStart(shanghaiDateKey(date));
-  return shanghaiDateKey(new Date(todayStart.getTime() - 1));
+export function businessDayDiff(start: Date, end: Date): number {
+  return dateKeyDayIndex(businessDateKey(end)) - dateKeyDayIndex(businessDateKey(start));
 }
 
-export function shanghaiFileTimestamp(date = new Date()): string {
-  const parts = shanghaiParts(date);
+function dateKeyDayIndex(dateKey: string): number {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000);
+}
+
+function formatDateKeyFromUtcDate(ms: number): string {
+  const date = new Date(ms);
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+export function previousBusinessDateKey(date = new Date()): string {
+  const todayStart = businessDateStart(businessDateKey(date));
+  return businessDateKey(new Date(todayStart.getTime() - 1));
+}
+
+export function businessFileTimestamp(date = new Date()): string {
+  const parts = businessParts(date);
   const ms = String(date.getMilliseconds()).padStart(3, "0");
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}-${parts.minute}-${parts.second}-${ms}+08-00`;
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}-${parts.minute}-${parts.second}-${ms}${formatOffsetForFilename(date)}`;
 }
 
-// 日志时间戳：上海时区 MM-DD HH:MM:SS.mmm
+function formatOffsetForFilename(date: Date): string {
+  const offsetMinutes = Math.round(timeZoneOffsetMs(date, businessTimeZone) / 60_000);
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
+  const minutes = String(abs % 60).padStart(2, "0");
+  return `${sign}${hours}-${minutes}`;
+}
+
+// 日志时间戳：业务时区 MM-DD HH:MM:SS.mmm
 export function logTimestamp(date = new Date()): string {
-  const p = shanghaiParts(date);
+  const p = businessParts(date);
   const ms = String(date.getMilliseconds()).padStart(3, "0");
   return `${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}.${ms}`;
 }
 
-// 调度运行窗口 key：上海时区 YYYY-MM-DDTHH-MM
+// 调度运行窗口 key：业务时区 YYYY-MM-DDTHH-MM
 export function runWindow(date = new Date()): string {
-  const p = shanghaiParts(date);
+  const p = businessParts(date);
   return `${p.year}-${p.month}-${p.day}T${p.hour}-${p.minute}`;
 }
 
-// 展示用时间：上海时区 YYYY-MM-DD HH:MM
-export function shanghaiDateTime(date = new Date()): string {
-  const p = shanghaiParts(date);
+// 展示用时间：业务时区 YYYY-MM-DD HH:MM
+export function businessDateTime(date = new Date()): string {
+  const p = businessParts(date);
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }
 
@@ -100,10 +202,10 @@ export function summarizeTextDelta(oldText: string, newText: string): string {
   return "（无文本变化）";
 }
 
-// ISO 8601 周序号（周一起始、周四定年），基于上海日历日。
+// ISO 8601 周序号（周一起始、周四定年），基于业务时区日历日。
 // 例：2026-01-01 是周四 → 2026-W01 起于周一 2025-12-29。
 export function weekKey(date = new Date()): string {
-  const p = shanghaiParts(date);
+  const p = businessParts(date);
   const [y, mo, d] = [Number(p.year), Number(p.month) - 1, Number(p.day)];
   // 用 UTC 锚点仅做星期/周序号运算（不涉及真实时刻），避免夏令时偏移。
   const dow = new Date(Date.UTC(y, mo, d)).getUTCDay(); // 0=周日
