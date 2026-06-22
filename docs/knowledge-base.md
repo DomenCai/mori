@@ -1,10 +1,10 @@
 # 知识库
 
-知识库是 Personal Agent 的 vault：Agent 可以把用户明确收藏的内容、定时投喂的文章和用户对知识卡片的反应沉淀成 Markdown 文件。它不是任务执行平台，而是“关于世界的资料库”和“关于用户兴趣的反馈回路”。
+知识库是 mori 的 vault：Agent 可以把用户明确收藏的内容、定时投喂的文章和用户对知识卡片的反应沉淀成 Markdown 文件。它不是任务执行平台，而是“关于世界的资料库”和“关于用户兴趣的反馈回路”。
 
 ## 文件位置
 
-生产态在 `~/.personal-agent/vault/`，开发态在 `data/vault/`。
+生产态在 `~/.mori/vault/`，开发态在 `data/vault/`。
 
 ```
 vault/
@@ -81,7 +81,7 @@ pushed_message_id: om_xxx
 
 ## 通知群反馈回路
 
-script 投喂会创建或复用“Personal Agent 通知”群。通知卡片包含标题、领域、标签、vault 路径和摘要。
+script 投喂会创建或复用“mori 通知”群。通知卡片包含标题、领域、标签、vault 路径和摘要。
 
 - 普通回复：快速收藏和记录看法，不展开长对话。
 - 话题回复：进入飞书 thread 深聊，thread 是独立 scope。

@@ -168,7 +168,7 @@ export function startDaemon(): void {
 
   if (!loadLarkConfig()) {
     bootLog.error(
-      "尚未完成飞书配置，请先前台运行 `personal-agent run` 扫码注册，再用 start。",
+      "尚未完成飞书配置，请先前台运行 `mori run` 扫码注册，再用 start。",
     );
     process.exit(1);
   }

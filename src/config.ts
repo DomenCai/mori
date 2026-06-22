@@ -194,10 +194,10 @@ export function resolveModelRoute(
 // ── 路径解析 ──
 // 运行时状态（lark_config.json / app.db / sessions）与用户可改文件（.env /
 // setting.json / agent 提示词）都挂在 ROOT 下：
-//   正常运行 → ~/.personal-agent；调试（pnpm dev 设 PERSONAL_AGENT_DEV）→ 项目内 ./data。
+//   正常运行 → ~/.mori；调试（pnpm dev 设 MORI_DEV）→ 项目内 ./data。
 // 用户可改文件首次缺失时，从仓库内置默认拷贝过去。
-const isDev = !!process.env.PERSONAL_AGENT_DEV;
-const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".personal-agent");
+const isDev = !!process.env.MORI_DEV;
+const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".mori");
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // 生产读构建时冻结在 dist/build-info.json 的产物信息；dev 下 fallback 到源码 package.json。
@@ -208,7 +208,7 @@ export function loadBuildInfo(): BuildInfo {
     const info = JSON.parse(readFileSync(localBuildInfo, "utf-8")) as Partial<BuildInfo>;
     if (typeof info.version === "string" && info.version.length > 0) {
       return {
-        name: typeof info.name === "string" && info.name ? info.name : "personal-agent",
+        name: typeof info.name === "string" && info.name ? info.name : "mori",
         version: info.version,
         builtAt: typeof info.builtAt === "string" ? info.builtAt : null,
         gitCommit: typeof info.gitCommit === "string" ? info.gitCommit : null,
@@ -219,7 +219,7 @@ export function loadBuildInfo(): BuildInfo {
   const pkgPath = join(REPO_ROOT, "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
   return {
-    name: typeof pkg.name === "string" ? pkg.name : "personal-agent",
+    name: typeof pkg.name === "string" ? pkg.name : "mori",
     version: pkg.version as string,
     builtAt: null,
     gitCommit: null,

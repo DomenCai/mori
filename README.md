@@ -1,8 +1,18 @@
-# Personal Agent
+# mori
 
-一个**飞书优先的对话型个人 Agent**，基于 [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core) 运行时。它不是日记 App，也不是任务执行平台，而是一个很懂我、能跟我交流的厉害朋友：我把日记、想法、有意思的知识丢给它，它读懂我、回应我，并在后台沉淀出越来越准的"关于我"的长期理解。
+一个**飞书优先的对话型个人思想伙伴**，基于 [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core) 运行时。它不是日记 App，也不是任务执行平台，而是一个很懂我、能跟我交流的厉害朋友：我把日记、想法、有意思的知识丢给它，它读懂我、回应我，并在后台沉淀出越来越准的"关于我"的长期理解。
 
 > 日记只是输入源，**记忆和长期上下文才是产品本体**。单用户、本地优先，不做多租户、不做 SaaS。
+
+## 关于这个名字
+
+**mori**，日语「森」，森林。这个字本身是三棵「木」叠起来的，木 → 林 → 森，越叠越繁茂。
+
+选它是因为森林是「涌现」最好的例子：没人设计一片森林，一粒种子、无数生命相互作用，它自己长成繁茂的样子。一个真正懂你的伙伴也一样——那种「懂」不是预先设定出来的，是你把日记、想法、在意的东西丢给它，它读你读多了，自己慢慢长出来的。它本身就是一次涌现。
+
+还有个意外的呼应：在希伯来语里，**mori** 是「我的老师」，也门犹太社区用它称呼拉比（rabbi）。一个陪你想事情、偶尔点破你盲点的伙伴，叫这个名也合适。
+
+所以它不叫 personal-agent 那种功能名。它是一片只属于你自己的、安静繁茂的森林。
 
 ## 能做什么
 
@@ -25,13 +35,13 @@ pnpm install
 pnpm dev            # 首次会弹出二维码，用飞书 App 扫码创建/授权应用
 ```
 
-**作为 CLI 安装**（常驻后台，数据落在 `~/.personal-agent`）：
+**作为 CLI 安装**（常驻后台，数据落在 `~/.mori`）：
 
 ```bash
-pnpm add -g github:DomenCai/PersonalAgent   # 替换为你的仓库
-personal-agent run      # 首次：前台扫码完成飞书注册
-personal-agent start    # 之后：后台守护运行
-personal-agent status   # 查看状态与日志路径
+pnpm add -g github:DomenCai/mori   # 替换为你的仓库
+mori run      # 首次：前台扫码完成飞书注册
+mori start    # 之后：后台守护运行
+mori status   # 查看状态与日志路径
 ```
 
 详见 [开发指南](docs/development.md) 与 [CLI 使用指南](docs/cli.md)。

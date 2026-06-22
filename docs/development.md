@@ -9,14 +9,14 @@
 
 ## 数据根：开发态 vs 生产态
 
-同一套代码，运行时状态和用户可改文件都挂在一个 ROOT 下，由 `PERSONAL_AGENT_DEV` 切换：
+同一套代码，运行时状态和用户可改文件都挂在一个 ROOT 下，由 `MORI_DEV` 切换：
 
 | | 开发态（`pnpm dev`） | 生产态（CLI） |
 |---|---|---|
-| ROOT | 项目内 `./data` | `~/.personal-agent` |
+| ROOT | 项目内 `./data` | `~/.mori` |
 | 用户可改文件 | 直接用仓库原位文件 | 首次缺失时从仓库 seed 一份 |
 
-开发态直接读写仓库里的 `data/`、`agent/`，改了立刻生效，不会污染 `~/.personal-agent`。
+开发态直接读写仓库里的 `data/`、`agent/`，改了立刻生效，不会污染 `~/.mori`。
 
 ## 首次启动
 
@@ -25,7 +25,7 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 设了 `PERSONAL_AGENT_DEV=1` 并用 `tsx watch` 热重载。首次运行若无飞书配置，终端会渲染二维码，用飞书 App 扫码即可创建/授权应用，凭据自动写入 `data/lark_config.json`，无需手填 appId/secret。日记群、主题群、私聊等 chat 绑定也写在这个文件里，重建 `data/app.db` 不会丢群绑定。
+`pnpm dev` 设了 `MORI_DEV=1` 并用 `tsx watch` 热重载。首次运行若无飞书配置，终端会渲染二维码，用飞书 App 扫码即可创建/授权应用，凭据自动写入 `data/lark_config.json`，无需手填 appId/secret。日记群、主题群、私聊等 chat 绑定也写在这个文件里，重建 `data/app.db` 不会丢群绑定。
 
 ## 配置 LLM
 
@@ -58,7 +58,7 @@ LOG_LEVEL=debug pnpm dev   # debug | info（默认） | warn | error
 
 ## 会话文件
 
-Agent transcript 由 pi-agent-core 的 JSONL session 仓库维护。仓库会按 `cwd` 分桶，早期文件夹名如 `--Users-caidongmeng-Documents-Personal-PersonalAgent--` 是把绝对 cwd 编码后的结果；现在本应用固定使用逻辑分桶 `--personal-agent--`。新 session 文件名使用 `setting.time.timezone` 对应的本地时间，例如 `2026-06-19T01-23-36-218+08-00_<session_id>.jsonl`。
+Agent transcript 由 pi-agent-core 的 `JsonlSessionRepo` 维护成 JSONL。本应用覆盖了默认的扁平 cwd 编码，改成按 `chatType/月份` 嵌套分桶，例如 `diary/2026-06/`、`dm/2026-06/`、`topic/2026-06/`。文件名用 `setting.time.timezone` 对应的本地时间加 session id，例如 `2026-06-19T01-40-22-483+08-00_<session_id>.jsonl`。
 
 ## 数据库
 
@@ -71,8 +71,8 @@ SQLite（`data/app.db`），schema 在 `src/storage/schema.sql`，启动时 `ini
 把 `diary-data/*.md` 历史日记灌进一个全新 DB，逐日/逐周回放记忆演化：
 
 ```bash
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --dry-run   # 只解析 Markdown 打印计数，不开 DB
+MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data
+MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --dry-run   # 只解析 Markdown 打印计数，不开 DB
 ```
 
 - 走和线上日记一样的蒸馏路径（`distillDiaryEntry`），每个 `### HH:MM` section 一条 message + 一条 episode，写失败落 fallback episode。

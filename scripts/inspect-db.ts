@@ -133,7 +133,7 @@ function parseArgs(argv: string[]): CliOptions {
 
 function printHelp(): void {
   console.log(`Usage:
-  PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts [command] [options]
+  MORI_DEV=1 pnpm tsx scripts/inspect-db.ts [command] [options]
 
 Commands:
   summary                         数据库整体概览（默认）
@@ -147,7 +147,7 @@ Commands:
   episode <id> [--with-source]    查看单条 episode
 
 Options:
-  --db <path>       指定 SQLite 文件。默认开发态为 data/app.db，生产态为 ~/.personal-agent/app.db
+  --db <path>       指定 SQLite 文件。默认开发态为 data/app.db，生产态为 ~/.mori/app.db
   --json            输出 JSON
   --full            不截断长文本
   --limit <n>       列表条数，默认 ${DEFAULT_LIMIT}
@@ -156,9 +156,9 @@ Options:
 }
 
 function defaultDbPath(): string {
-  return process.env.PERSONAL_AGENT_DEV
+  return process.env.MORI_DEV
     ? join(process.cwd(), "data", "app.db")
-    : join(homedir(), ".personal-agent", "app.db");
+    : join(homedir(), ".mori", "app.db");
 }
 
 function openReadonlyDb(path: string): Database.Database {

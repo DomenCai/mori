@@ -1,13 +1,13 @@
 {
-  "name": "personal-agent",
+  "name": "mori",
   "version": "1.0.1",
   "type": "module",
-  "description": "飞书优先的对话型个人 Agent，基于 pi-agent-core",
+  "description": "飞书优先的对话型个人思想伙伴，基于 pi-agent-core",
   "bin": {
-    "personal-agent": "dist/main.js"
+    "mori": "dist/main.js"
   },
   "scripts": {
-    "dev": "PERSONAL_AGENT_DEV=1 tsx watch src/main.ts",
+    "dev": "MORI_DEV=1 tsx watch src/main.ts",
     "start": "node dist/main.js",
     "build": "tsc && node scripts/write-build-info.mjs",
     "prepare": "pnpm run build"

@@ -62,8 +62,8 @@ function parseArgs(argv: string[]): CliOptions | "help" {
 
 function printHelp(): void {
   console.log(`Usage:
-  PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts [diary-dir] [--per-section|--per-day] [--dry-run]
-  PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts [diary-dir] --week-start YYYY-MM-DD [--skip-weekly]
+  MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts [diary-dir] [--per-section|--per-day] [--dry-run]
+  MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts [diary-dir] --week-start YYYY-MM-DD [--skip-weekly]
 
 Default:
   diary-dir     diary-data

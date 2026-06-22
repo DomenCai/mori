@@ -293,12 +293,12 @@ async function ensureNotificationChat(
     throw new Error("无法创建通知群：ownerOpenId 未绑定");
   }
   const { chatId } = await channel.createChat({
-    name: "Personal Agent 通知",
-    description: "Personal Agent 定时投喂通知群",
+    name: "mori 通知",
+    description: "mori 定时投喂通知群",
     inviteUserIds: [ownerOpenId],
     userIdType: "open_id",
   });
-  registry.register(chatId, "notification", "Personal Agent 通知");
+  registry.register(chatId, "notification", "mori 通知");
   return chatId;
 }
 

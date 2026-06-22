@@ -32,7 +32,7 @@
 
 ## Script 任务
 
-script 任务用于定时投喂知识内容。脚本放在 `scriptDir` 下：生产态 `~/.personal-agent/script/`，开发态 `data/script/`。
+script 任务用于定时投喂知识内容。脚本放在 `scriptDir` 下：生产态 `~/.mori/script/`，开发态 `data/script/`。
 
 示例：
 
@@ -90,7 +90,7 @@ export default async function run() {
 script 成功返回后：
 
 1. 框架写入 `vault/Inbox/<deliver.inbox>/YYYY-MM/<slug>.md`。
-2. 如果 `deliver.notify` 为 `true`，创建或复用“Personal Agent 通知”群。
+2. 如果 `deliver.notify` 为 `true`，创建或复用“mori 通知”群。
 3. 发送知识卡片，并把 `pushed_message_id` 写进 frontmatter。
 4. 把 assistant 通知消息写入 `messages`，用于后续 reply 反查知识文件。
 

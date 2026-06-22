@@ -1,6 +1,6 @@
 # 记忆模型
 
-这份文档说明 Personal Agent 怎么"了解你"：四层记忆各自存什么、谁能写、什么时候写。可编辑的策略原文在仓库根的 [`agent/memory_policy.md`](../agent/memory_policy.md)，这里讲背后的设计取舍。
+这份文档说明 mori 怎么"了解你"：四层记忆各自存什么、谁能写、什么时候写。可编辑的策略原文在仓库根的 [`agent/memory_policy.md`](../agent/memory_policy.md)，这里讲背后的设计取舍。
 
 ## 四层记忆
 

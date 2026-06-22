@@ -63,7 +63,7 @@ function readBuildCommit() {
 }
 
 function readInstalledVersion() {
-  const result = run("personal-agent", ["--version"], {
+  const result = run("mori", ["--version"], {
     capture: true,
     allowFailure: true,
   });
@@ -85,7 +85,7 @@ function isDaemonRunning() {
     if (outputContainsRunning(`${result.out}\n${result.err}`)) return true;
   }
 
-  const result = run("personal-agent", ["status"], {
+  const result = run("mori", ["status"], {
     capture: true,
     allowFailure: true,
   });
@@ -129,7 +129,7 @@ function fillMissingPath(target, source, path) {
 }
 
 function syncSettingFields() {
-  const settingPath = join(homedir(), ".personal-agent", "setting.json");
+  const settingPath = join(homedir(), ".mori", "setting.json");
   if (!existsSync(settingPath)) {
     log("setting.json 不存在，跳过补全字段。");
     return;
@@ -157,7 +157,7 @@ function shortCommit(commit) {
   return commit.slice(0, 7);
 }
 
-if (process.env.PERSONAL_AGENT_DEV) {
+if (process.env.MORI_DEV) {
   fail("dev 模式不支持 update.js，请直接用 git/pnpm 操作仓库。");
 }
 
@@ -167,7 +167,7 @@ const gitRoot = run("git", ["rev-parse", "--show-toplevel"], {
 });
 if (!gitRoot.ok) fail("当前目录不是 git 工作副本。");
 if (realpathSync(gitRoot.out) !== scriptDir) {
-  fail("update.js 必须在 PersonalAgent 仓库根目录运行。");
+  fail("update.js 必须在 mori 仓库根目录运行。");
 }
 
 const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], {

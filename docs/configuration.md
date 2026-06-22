@@ -1,15 +1,15 @@
 # 配置参考
 
-这份文档集中说明 Personal Agent 的运行配置：文件在哪、各管什么、怎么改。安装与守护运行见 [CLI 使用指南](cli.md)，本地开发见 [开发指南](development.md)，功能总览见 [文档总览](index.md)。
+这份文档集中说明 mori 的运行配置：文件在哪、各管什么、怎么改。安装与守护运行见 [CLI 使用指南](cli.md)，本地开发见 [开发指南](development.md)，功能总览见 [文档总览](index.md)。
 
 ## 数据根（ROOT）
 
-所有配置和运行状态都挂在一个 ROOT 目录下，由环境变量 `PERSONAL_AGENT_DEV` 决定位置：
+所有配置和运行状态都挂在一个 ROOT 目录下，由环境变量 `MORI_DEV` 决定位置：
 
 | 模式 | 触发 | ROOT |
 |---|---|---|
-| 生产 | 正常运行 CLI | `~/.personal-agent` |
-| 开发 | `pnpm dev`（已设 `PERSONAL_AGENT_DEV=1`） | 项目内 `./data` |
+| 生产 | 正常运行 CLI | `~/.mori` |
+| 开发 | `pnpm dev`（已设 `MORI_DEV=1`） | 项目内 `./data` |
 
 生产模式下，用户可改的 `.env`、`setting.json` 和 `agent/` 首次缺失时会从仓库模板 seed 到 ROOT，之后改 ROOT 里的副本。开发模式直接读写仓库原位文件；真实 `data/setting.json`、`data/lark_config.json`、`data/schedules.json` 都是私有运行配置，不提交。
 
@@ -25,7 +25,7 @@
 
 ## 飞书凭据 `lark_config.json`
 
-首次前台运行 `personal-agent run`（或 `pnpm dev`）会渲染二维码，飞书扫码后自动创建 / 授权应用，凭据写入 `lark_config.json`。
+首次前台运行 `mori run`（或 `pnpm dev`）会渲染二维码，飞书扫码后自动创建 / 授权应用，凭据写入 `lark_config.json`。
 
 字段（见 `LarkConfig`）：
 

@@ -7,7 +7,7 @@ This is a Node.js 22+ TypeScript ESM service for a Feishu-first personal agent. 
 ## Build, Test, and Development Commands
 
 - `pnpm install` installs dependencies; use pnpm because the lockfile and package manager are pinned.
-- `pnpm dev` runs `tsx watch src/main.ts` with `PERSONAL_AGENT_DEV=1`, so runtime state is read from local `data/`.
+- `pnpm dev` runs `tsx watch src/main.ts` with `MORI_DEV=1`, so runtime state is read from local `data/`.
 - `pnpm build` runs `tsc`, type-checks the project, and writes `dist/`.
 - `pnpm start` runs the compiled daemon from `dist/main.js`; run `pnpm build` first.
 

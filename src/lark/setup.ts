@@ -15,8 +15,8 @@ export async function runRegistrationWizard(): Promise<LarkConfig> {
   console.log("\n未检测到飞书应用配置，进入扫码创建向导。\n");
 
   const result = await registerApp({
-    source: "personal-agent",
-    appPreset: { name: "PersonalAgent" },
+    source: "mori",
+    appPreset: { name: "mori" },
     onQRCodeReady: (info) => {
       console.log("请用飞书 App 扫描以下二维码完成应用创建/授权：\n");
       qrcode.generate(info.url, { small: true });

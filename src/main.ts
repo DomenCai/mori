@@ -270,9 +270,9 @@ function resolveLarkConversationType(
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────
-const HELP = `personal-agent — 飞书优先的对话型个人 Agent
+const HELP = `mori — 飞书优先的对话型个人思想伙伴
 
-用法: personal-agent <命令>
+用法: mori <命令>
 
 命令:
   run               前台运行（调试 / 首次扫码注册用）

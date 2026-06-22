@@ -14,21 +14,21 @@
 只读查看 `data/app.db` 或指定 SQLite 文件。
 
 ```bash
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts summary
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts integrity
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts day 2026-06-16
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts week 2026-W24
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts storylines --status active
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts profile
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts profile-history --limit 10
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts episodes --limit 20
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts episode ep_xxx --with-source
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts summary
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts integrity
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts day 2026-06-16
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts week 2026-W24
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts storylines --status active
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts profile
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts profile-history --limit 10
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts episodes --limit 20
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts episode ep_xxx --with-source
 ```
 
 常用参数：
 
 ```bash
---db <path>       # 指定 DB；默认开发态 data/app.db，生产态 ~/.personal-agent/app.db
+--db <path>       # 指定 DB；默认开发态 data/app.db，生产态 ~/.mori/app.db
 --json            # 输出 JSON
 --full            # 不截断长文本
 --limit <n>       # 列表条数
@@ -41,20 +41,20 @@ PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts episode ep_xxx --with-source
 导入或回放后先看整体：
 
 ```bash
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts summary
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts integrity
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts summary
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts integrity
 ```
 
 如果要看某一天是否完成 dream：
 
 ```bash
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts day 2026-06-16
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts day 2026-06-16
 ```
 
 如果要看某周周总结和画像变更：
 
 ```bash
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts week 2026-W24
+MORI_DEV=1 pnpm tsx scripts/inspect-db.ts week 2026-W24
 ```
 
 ## backfill-diary.ts
@@ -62,9 +62,9 @@ PERSONAL_AGENT_DEV=1 pnpm tsx scripts/inspect-db.ts week 2026-W24
 历史日记导入和回放脚本。会写数据库并调用 LLM。
 
 ```bash
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --dry-run
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --week-start 2026-06-15 --skip-weekly
-PERSONAL_AGENT_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data
+MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --dry-run
+MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --week-start 2026-06-15 --skip-weekly
+MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data
 ```
 
 要点：

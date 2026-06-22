@@ -70,7 +70,7 @@
   "http": {
     "fetch": {
       "timeoutMs": 30000,
-      "userAgent": "PersonalAgent/1.0"
+      "userAgent": "mori/1.0"
     }
   },
   "knowledge": {

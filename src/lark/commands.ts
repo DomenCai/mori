@@ -101,14 +101,13 @@ async function handleNewDiaryGroup(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  const date = new Date().toLocaleDateString("zh-CN");
   const { chatId } = await ctx.channel.createChat({
-    name: `日记群 · ${date}`,
-    description: "Personal Agent 日记",
+    name: "日记群",
+    description: "mori 日记",
     inviteUserIds: [ctx.ownerOpenId],
     userIdType: "open_id",
   });
-  ctx.registry.register(chatId, "diary", `日记群 · ${date}`);
+  ctx.registry.register(chatId, "diary", "日记群");
   await ctx.channel.send(msg.chatId, {
     text: `✅ 日记群已创建，去新群里记日记吧！`,
   });
@@ -123,7 +122,7 @@ async function handleNewChat(
   const name = topic.trim() || `主题群 · ${new Date().toLocaleDateString("zh-CN")}`;
   const { chatId } = await ctx.channel.createChat({
     name,
-    description: "Personal Agent 主题群",
+    description: "mori 主题群",
     inviteUserIds: [ctx.ownerOpenId],
     userIdType: "open_id",
   });
