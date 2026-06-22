@@ -99,7 +99,7 @@ ${message.content}`;
   }
 
   return `[日记群新日记]
-这是一条新的日记入口消息。请先调用 write_episode 工具，把原文蒸馏成 episode；必要时再调用其它工具；最后再简短回复用户。
+这是一条新的日记入口消息。请先调用 write_episode 工具，把原文蒸馏成 episode；必要时再调用其它工具；最后按 response_style 选最合适的模式回应，长短随内容走，该深就深，该一句就一句。
 
 原文：
 ${message.content}`;
