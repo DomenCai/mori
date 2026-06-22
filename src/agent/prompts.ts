@@ -14,6 +14,7 @@ const responseStyle = readPromptFile("response_style.md");
 
 export interface MemorySnapshot {
   profile: string;
+  chapter: string;
   activeStorylines: Array<{
     id: string;
     kind: string;
@@ -51,6 +52,10 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
     .prepare("SELECT content FROM profile WHERE id = 1")
     .get() as { content: string } | undefined;
 
+  const chapter = db
+    .prepare("SELECT content FROM chapter WHERE id = 1")
+    .get() as { content: string } | undefined;
+
   const activeStorylines = db
     .prepare(
       `SELECT id, kind, title, status, summary, current_tension, emotional_arc,
@@ -84,6 +89,7 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
 
   return {
     profile: profile?.content ?? "",
+    chapter: chapter?.content ?? "",
     activeStorylines: activeStorylines.map((r) => ({
       id: r.id,
       kind: r.kind,
@@ -127,6 +133,10 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
   sections.push(responseStyle);
 
   sections.push("---\n# 身份画像\n" + snapshot.profile);
+
+  if (snapshot.chapter.trim()) {
+    sections.push("---\n# 当前主线\n" + snapshot.chapter.trim());
+  }
 
   if (snapshot.activeStorylines.length > 0) {
     const items = snapshot.activeStorylines

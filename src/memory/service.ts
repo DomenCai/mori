@@ -6,6 +6,7 @@ import type {
   AdvanceStorylineData,
   CreateStorylineData,
   MergeStorylinesData,
+  SetChapterData,
   SetStorylineStatusData,
   StorylineKind,
   StorylineStatus,
@@ -52,6 +53,17 @@ export interface StorylineChangeSummary {
   created_at: string;
 }
 
+export interface ChapterRevision {
+  id: string;
+  old_content: string | null;
+  new_content: string;
+  source_storyline_ids: string[];
+  source_episode_ids: string[];
+  reason: string;
+  run_id: string | null;
+  created_at: string;
+}
+
 export interface DailyMemoryRun {
   id: string;
   date_key: string;
@@ -74,6 +86,14 @@ type StorylineRow = Omit<Storyline, "people" | "evidence_episode_ids"> & {
 };
 
 type RevisionRow = Omit<StorylineRevision, "source_episode_ids"> & {
+  source_episode_ids_json: string;
+};
+
+type ChapterRevisionRow = Omit<
+  ChapterRevision,
+  "source_storyline_ids" | "source_episode_ids"
+> & {
+  source_storyline_ids_json: string;
   source_episode_ids_json: string;
 };
 
@@ -158,6 +178,46 @@ export class MemoryService {
       new_content: string;
       reason: string;
     }>;
+  }
+
+  // ── Chapter ──
+
+  getChapter(): string {
+    const row = this.db
+      .prepare("SELECT content FROM chapter WHERE id = 1")
+      .get() as { content: string };
+    return row.content;
+  }
+
+  setChapter(data: SetChapterData, runId?: string): void {
+    const oldContent = this.getChapter();
+    const newContent = data.content.trim();
+    const now = this.clock.nowISO();
+    this.db.prepare("UPDATE chapter SET content = ?, updated_at = ? WHERE id = 1").run(newContent, now);
+    this.db
+      .prepare(
+        `INSERT INTO chapter_revisions (id, old_content, new_content, source_storyline_ids_json, source_episode_ids_json, reason, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        genId("cr"),
+        oldContent,
+        newContent,
+        JSON.stringify(unique(data.source_storyline_ids)),
+        JSON.stringify(unique(data.source_episode_ids ?? [])),
+        data.reason,
+        runId ?? null,
+        now,
+      );
+  }
+
+  getChapterRevisionsByRun(runId: string): ChapterRevision[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM chapter_revisions WHERE run_id = ? ORDER BY created_at ASC",
+      )
+      .all(runId) as ChapterRevisionRow[];
+    return rows.map(parseChapterRevision);
   }
 
   // ── Storylines ──
@@ -706,6 +766,19 @@ function parseRevision(row: RevisionRow): StorylineRevision {
   const { source_episode_ids_json, ...rest } = row;
   return {
     ...rest,
+    source_episode_ids: parseJsonArray(source_episode_ids_json),
+  };
+}
+
+function parseChapterRevision(row: ChapterRevisionRow): ChapterRevision {
+  const {
+    source_storyline_ids_json,
+    source_episode_ids_json,
+    ...rest
+  } = row;
+  return {
+    ...rest,
+    source_storyline_ids: parseJsonArray(source_storyline_ids_json),
     source_episode_ids: parseJsonArray(source_episode_ids_json),
   };
 }

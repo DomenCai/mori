@@ -17,9 +17,9 @@
 ## 能做什么
 
 - **日记群**：把日记发到日记群，流式回复像朋友聊天，后台顺手写一条 episode。
-- **四层记忆**：身份画像（慢变、受保护）/ storylines（正在展开的生活叙事）/ fresh episodes / 原文归档（FTS 检索），始终在场而不膨胀。
+- **五层记忆**：身份画像（慢变、受保护）/ 当前主线（跨线阶段与主题）/ storylines（正在展开的生活叙事）/ fresh episodes / 原文归档（FTS 检索），始终在场而不膨胀。
 - **每日记忆整理**：每天 06:00 处理前一天的 fresh episodes，维护 storylines，并在严格节流下判断是否轻触达。
-- **周度总结**：每周日 23:55 读本周 daily runs、storylines 和 episode evidence，保守更新画像并发周记录。
+- **周度总结**：每周日 23:55 读本周 daily runs、storylines 和 episode evidence，保守更新画像与当前主线，并发周记录。
 
 完整文档入口见 [文档总览](docs/index.md)，设计历史见 [Design Index](design/index.md)。
 
@@ -67,7 +67,7 @@ mori status   # 查看状态与日志路径
 
 - [文档总览](docs/index.md) —— 当前功能文档入口和覆盖矩阵
 - [飞书命令](docs/commands.md) —— 群、会话、画像、storylines、定时任务命令
-- [记忆模型](docs/memory-model.md) —— 当前 profile / storylines / episodes / daily memory 语义
+- [记忆模型](docs/memory-model.md) —— 当前 profile / chapter / storylines / episodes / daily memory 语义
 - [知识库](docs/knowledge-base.md) —— vault、Inbox/Garden、知识反应和知识工具
 - [定时任务](docs/schedules.md) —— builtin、script 投喂和 knowledge index
 - [配置参考](docs/configuration.md) —— runtime root、配置文件、模型路由和提示词位置

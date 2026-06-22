@@ -23,6 +23,7 @@ import {
   createSetStorylineStatusTool,
 } from "./tools/storylines.js";
 import { createUpdateProfileTool } from "./tools/update-profile.js";
+import { createSetChapterTool } from "./tools/set-chapter.js";
 import { createSearchMemoryTool } from "./tools/search-memory.js";
 import { createSendCheckinTool } from "./tools/send-checkin.js";
 import { createKnowledgeTools } from "./tools/knowledge.js";
@@ -329,6 +330,7 @@ ${JSON.stringify(files, null, 2)}
 
     if (canEditProfile) {
       allTools.push(createUpdateProfileTool(this.memoryService, () => entry.runId));
+      allTools.push(createSetChapterTool(this.memoryService, () => entry.runId));
     }
 
     const activeToolNames = activeToolNamesFor(chatType);
@@ -453,7 +455,7 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
     return ["write_episode", "search_memory"];
   }
   if (chatType === "consolidation") {
-    return ["update_profile", "search_memory"];
+    return ["update_profile", "set_chapter", "search_memory"];
   }
   if (chatType === "knowledge_index") {
     return ["read_vault"];

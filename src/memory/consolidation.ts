@@ -97,20 +97,31 @@ export async function runWeeklyConsolidationForWindow(opts: {
       }`;
     })
     .join("\n\n---\n\n");
+  const currentChapter = memoryService.getChapter();
+  const currentVisibleStorylines = memoryService.getVisibleStorylines();
 
-  const mechanicalPrompt = `# 周度合并：画像更新与客观记录
+  const mechanicalPrompt = `# 周度合并：画像更新、当前主线与客观记录
 
-你只做两件事：
+你只做三件事：
 
 1. 判断这一周的叙事变化是否应该改变长期身份画像，必要时调用 update_profile。
-2. 用三五句客观、不带情绪的话记一笔这周发生了什么，作为周记录正文。
+2. 判断当前主线是否需要刷新，必要时调用 set_chapter。
+3. 用三五句客观、不带情绪的话记一笔这周发生了什么，作为周记录正文。
 
 边界：
-- 允许 update_profile；禁止写 storylines，storylines 是 daily_memory 的职责。
+- 允许 update_profile 和 set_chapter；禁止写 storylines，storylines 是 daily_memory 的职责。
 - 画像变更必须有用户证据，不能只基于 daily run 或 storyline 二次总结。
 - 只有 \`user:\` 原文可作为画像证据；assistant 内容绝不可作为画像证据。
 - 仅当出现跨篇稳定、反复出现的信号时才修改画像；不因单篇内容或一时情绪改画像。
 - 如 episode evidence 不足，可用 search_memory 回查原文。
+- 输入分区：当前 visible storylines 和当前 chapter 只供刷新当前主线使用，不能放宽画像门控；画像只凭本周新鲜用户证据判断。
+
+刷新当前主线：
+- 当前主线是 profile 与 storylines 之间的中间层，写此刻横跨多条 storyline 的阶段、主题或反复卡点。
+- 默认延续原 chapter；只有主线真的转章、变清楚或原文已不准时才调用 set_chapter。
+- content 最多 400 到 500 字，写成一段连接性 prose，不要 bullet，不复述单条 storyline。
+- 描述处境与主题，不下心理状态、人格、关系或健康结论，不写未经确认的敏感推断。
+- source_storyline_ids 是主证据，必须来自 currentVisibleStorylines；source_episode_ids 只是可选原文锚点。
 
 本周 daily_memory runs：
 \`\`\`json
@@ -127,6 +138,14 @@ ${episodeSummaries || "（无 episode）"}
 
 当前 profile：
 ${memoryService.getProfile()}
+
+当前 chapter：
+${currentChapter || "（尚未建立当前主线）"}
+
+currentVisibleStorylines（只供刷新当前主线）：
+\`\`\`json
+${JSON.stringify(currentVisibleStorylines, null, 2)}
+\`\`\`
 
 做完必要工具调用后，最终回复必须严格使用下面格式：
 <weekly_record>
@@ -153,7 +172,7 @@ ${memoryService.getProfile()}
   const messageService = harnessManager.getMessageService();
   try {
     captured = "";
-    await entry.harness.setActiveTools(["update_profile", "search_memory"]);
+    await entry.harness.setActiveTools(["update_profile", "set_chapter", "search_memory"]);
     await entry.harness.prompt(mechanicalPrompt);
     const recapText = extractWeeklyRecap(captured);
 

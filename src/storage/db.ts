@@ -25,6 +25,7 @@ export function initDb(db: Database.Database, clock: Clock = systemClock): void 
   db.exec(schema);
   applyDbMigrations(db);
   ensureProfileRow(db, clock);
+  ensureChapterRow(db, clock);
 }
 
 function applyDbMigrations(db: Database.Database): void {
@@ -55,6 +56,17 @@ function ensureProfileRow(db: Database.Database, clock: Clock): void {
     db.prepare(
       "INSERT INTO profile (id, content, updated_at) VALUES (1, ?, ?)",
     ).run(EMPTY_PROFILE, clock.nowISO());
+  }
+}
+
+function ensureChapterRow(db: Database.Database, clock: Clock): void {
+  const chapterExists = db
+    .prepare("SELECT 1 FROM chapter WHERE id = 1")
+    .get();
+  if (!chapterExists) {
+    db.prepare(
+      "INSERT INTO chapter (id, content, updated_at) VALUES (1, ?, ?)",
+    ).run("", clock.nowISO());
   }
 }
 

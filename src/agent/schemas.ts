@@ -100,6 +100,22 @@ export const UpdateProfileParams = Type.Object({
 });
 export type UpdateProfileData = Static<typeof UpdateProfileParams>;
 
+export const SetChapterParams = Type.Object({
+  content: Type.String({
+    description: "当前主线全文。整体重写，短 prose，不复述单条 storyline",
+  }),
+  reason: Type.String({ description: "为什么这次需要写入或改写当前主线" }),
+  source_storyline_ids: Type.Array(Type.String(), {
+    description: "支撑这次综合的主要 storyline IDs",
+  }),
+  source_episode_ids: Type.Optional(
+    Type.Array(Type.String(), {
+      description: "可选 raw anchor，只在需要精确回查原文时填写",
+    }),
+  ),
+});
+export type SetChapterData = Static<typeof SetChapterParams>;
+
 export const SearchMemoryParams = Type.Object({
   query: Type.String({ description: "搜索关键词" }),
   limit: Type.Optional(

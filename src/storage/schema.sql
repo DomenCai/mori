@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS profile_revisions (
   created_at TEXT NOT NULL
 );
 
+-- 当前主线：profile 与 storylines 之间的跨线综合层。
+CREATE TABLE IF NOT EXISTS chapter (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  content TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- 当前主线变更审计
+CREATE TABLE IF NOT EXISTS chapter_revisions (
+  id TEXT PRIMARY KEY,
+  old_content TEXT,
+  new_content TEXT NOT NULL,
+  source_storyline_ids_json TEXT NOT NULL DEFAULT '[]',
+  source_episode_ids_json TEXT NOT NULL DEFAULT '[]',
+  reason TEXT NOT NULL,
+  run_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chapter_revisions_run ON chapter_revisions(run_id);
+
 -- 叙事线：episode 与 profile 之间的“正在展开什么”压缩层。
 CREATE TABLE IF NOT EXISTS storylines (
   id TEXT PRIMARY KEY,
