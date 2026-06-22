@@ -70,6 +70,11 @@ export interface SessionPolicyConfig {
   topic: SessionPolicyItem;
 }
 
+export interface KnowledgeSearchConfig {
+  provider: "tavily" | "brave";
+  apiKeyEnv: string;
+}
+
 export interface SettingConfig {
   llm: LlmConfig;
   time: {
@@ -92,6 +97,7 @@ export interface SettingConfig {
     index: {
       checkIntervalMs: number;
     };
+    search: KnowledgeSearchConfig;
   };
 }
 

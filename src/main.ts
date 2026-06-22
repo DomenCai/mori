@@ -22,9 +22,11 @@ import { HarnessManager } from "./agent/harness.js";
 import {
   handleChatMessage,
   handleDiaryMessage,
+  handleLensMessage,
   handleNotificationMessage,
   isDiaryEntryMessage,
 } from "./lark/messageHandlers.js";
+import { parseLens } from "./lark/lenses.js";
 import { initSchedules } from "./schedule/cron.js";
 import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
@@ -144,6 +146,22 @@ async function runForeground() {
         await channel.send(msg.chatId, {
           text: "这个群还没有注册为日记群或其它受管会话，已忽略本条消息。",
         });
+        return;
+      }
+
+      const lens = parseLens(msg.content);
+      if (lens && resolvedType !== "diary") {
+        const lensChatType = msg.threadId || resolvedType === "notification"
+          ? "thread"
+          : resolvedType;
+        await handleLensMessage(
+          msg,
+          ingested,
+          channel,
+          harnessManager,
+          lensChatType,
+          lens,
+        );
         return;
       }
 

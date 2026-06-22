@@ -115,6 +115,34 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 `setting.http.fetch` 控制 `fetch_article` 的 `timeoutMs` 和 `userAgent`。`setting.knowledge.index.checkIntervalMs` 控制 knowledge index 后台评估周期。
 
+## Web Search
+
+`web_search` 是 companion harness 的通用只读工具，给普通聊天和认知透镜（lens）查外部事实用。配置放在 `setting.knowledge.search`：
+
+```json
+{
+  "knowledge": {
+    "search": {
+      "provider": "tavily",
+      "apiKeyEnv": "TAVILY_API_KEY"
+    }
+  }
+}
+```
+
+`provider` 只能是 `tavily` 或 `brave`。`.env` 里填对应 key：
+
+```env
+TAVILY_API_KEY=tvly-...
+BRAVE_API_KEY=...
+```
+
+只有 `setting.knowledge.search` 和对应环境变量同时存在时，运行时才会注册并暴露 `web_search`。缺配置或缺 key 时普通聊天不会看到搜索工具，`/plain` 也只保留 `fetch_article`，不会因为缺搜索 key 让回复失败。
+
+Tavily 搜索结果可能带清洗正文，`web_search` 会保留到 `content` 字段；Brave 只返回标题、URL 和摘要。对象本身是 URL 时仍走 `fetch_article`，不用搜索工具重复抓取。
+
+已有部署如果已经有自己的 `setting.json`，可以手动补上 `knowledge.search` 和对应 key；新装环境会从 `data/setting.example.json` seed 出这一段。
+
 ## 定时任务 `schedules.json`
 
 内置任务基线写在代码里，`schedules.json` 是覆盖层：只需要写 `id` 和要覆盖的字段；代码不认识的 builtin 会被忽略，script 任务以 JSON 为唯一来源。

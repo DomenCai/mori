@@ -12,6 +12,21 @@ system prompt 由 `src/agent/prompts.ts` 把三块按顺序拼起来，后面再
 | `response_style.md` | 此刻怎么回（陪伴 / 拆线 / 反驳 / 沉淀 四模式 + 通用原则） |
 | `memory_policy.md` | 记忆架构 + 工具写入纪律，跟人格无关，刻意不掺语气 |
 
+## Cognitive Lenses 的位置
+
+`/think`、`/rank`、`/plain` 不是新人格，也不按群拆 soul。它们只是当前这一轮使用的思考动作：
+
+| 层 | 内容 | 是否变化 |
+|---|---|---|
+| 人格内核 | `soul.md` + `response_style.md`，决定是谁、怎么说话 | 全局共享 |
+| 记忆上下文 | 画像、storylines、episodes、知识地图 | 随记忆更新 |
+| 场景纪律 | 日记、私聊、主题群、thread 的工具与边界 | 按 chatType |
+| 当下出招 | `/think` 下钻、`/rank` 降秩、`/plain` 白话 | 按命令 |
+
+所以 lens prompt 只写方法，不重复声音规则，不带 org-mode、ASCII 图、文件命名之类产物格式。声音仍由同一个 soul 控制。
+
+Lens runner 也是只读的。它不会触发知识晋升，不会修改 vault，也不会写身份画像；`/plain` 能临时用 `fetch_article`，并在搜索配置和 key 都存在时临时用 `web_search`，目的是把解释讲准，不是为了收藏。
+
 ## 声音定调
 
 底色是一个**收敛的深度倾听者**：很懂我、能深度交流的厉害朋友，不是咨询师、日记 App、待办管理器。

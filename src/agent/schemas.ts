@@ -118,6 +118,14 @@ export const FetchArticleParams = Type.Object({
 });
 export type FetchArticleData = Static<typeof FetchArticleParams>;
 
+export const WebSearchParams = Type.Object({
+  query: Type.String({ description: "搜索关键词或问题" }),
+  limit: Type.Optional(
+    Type.Number({ description: "最多返回条数", default: 5 }),
+  ),
+});
+export type WebSearchData = Static<typeof WebSearchParams>;
+
 export const SaveToGardenParams = Type.Object({
   title: Type.String(),
   domain: Type.String(),

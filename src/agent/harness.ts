@@ -26,6 +26,7 @@ import { createUpdateProfileTool } from "./tools/update-profile.js";
 import { createSearchMemoryTool } from "./tools/search-memory.js";
 import { createSendCheckinTool } from "./tools/send-checkin.js";
 import { createKnowledgeTools } from "./tools/knowledge.js";
+import { isWebSearchConfigured } from "./tools/web-search.js";
 import { genId, businessDateKey, businessFileTimestamp } from "../utils.js";
 import type { SessionPolicyConfig } from "../config.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
@@ -417,12 +418,16 @@ function appendSessionInstructions(
   }
 
   if (chatType !== "diary") {
+    const externalFactsInstruction = isWebSearchConfigured()
+      ? "- 对不熟或可能过期的外部事实，先 web_search；对象是 URL 时用 fetch_article。"
+      : "- 对象是 URL 时可用 fetch_article；未配置 web_search 时不要尝试网页搜索。";
     return `${basePrompt}
 
 ---
 # 当前会话工具纪律
 - 持续叙事线由 daily_memory 统一维护；普通对话不要直接写 storylines。
 - 如用户明确要求收藏 URL，可先 fetch_article 再 save_to_garden。
+${externalFactsInstruction}
 - DM、主题群和话题中，当前话题明显可能命中已有知识时可以 grep_vault / read_vault，回答要短，不要整段搬运原文。
 - 反应和普通对话蒸馏只写 episode，绝不修改身份画像。`;
   }
@@ -456,7 +461,7 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
   if (chatType === "daily_memory") {
     return [];
   }
-  return [
+  const tools = [
     "search_memory",
     "fetch_article",
     "save_to_garden",
@@ -465,6 +470,10 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
     "update_frontmatter",
     "promote",
   ];
+  if (isWebSearchConfigured()) {
+    tools.splice(1, 0, "web_search");
+  }
+  return tools;
 }
 
 function policyKeyForChatType(

@@ -4,11 +4,13 @@ import type {
   NormalizedMessage,
   SendOptions,
 } from "@larksuite/channel";
-import { HarnessManager } from "../agent/harness.js";
+import { HarnessManager, type HarnessEntry } from "../agent/harness.js";
 import type { EpisodeSource } from "../diary/service.js";
 import { distillDiaryEntry } from "../diary/distill.js";
 import type { IngestedMessage } from "../ingest/message.js";
 import { larkMessageId } from "./ingest.js";
+import { formatLensPrompt, type ParsedLens } from "./lenses.js";
+import { isWebSearchConfigured } from "../agent/tools/web-search.js";
 import { createAgentCardState, renderAgentCard } from "./cards.js";
 import {
   appendCardText,
@@ -28,6 +30,102 @@ const diaryLog = logger("diary");
 const DIARY_REPLY_TOOL_NAMES = [
   "search_memory",
 ];
+
+interface StreamAgentReplyOutcome {
+  promptError?: string | null;
+  successStatus?: string;
+  errorStatus?: string;
+}
+
+async function streamAgentReply(
+  channel: LarkChannel,
+  msg: NormalizedMessage,
+  entry: HarnessEntry,
+  runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
+  log: typeof larkLog,
+): Promise<{ messageId: string; assistantText: string }> {
+  let assistantText = "";
+  const started = Date.now();
+  const sent = await channel.stream(
+    msg.chatId,
+    {
+      card: {
+        initial: renderAgentCard(createAgentCardState()),
+        producer: async (ctrl) => {
+          const cardState = createAgentCardState();
+          let promptError: string | null = null;
+          let outcome: StreamAgentReplyOutcome = {};
+          let lastTotalTokens = 0;
+
+          const unsubscribe = entry.harness.subscribe(async (event) => {
+            if (
+              event.type === "message_update" &&
+              event.assistantMessageEvent.type === "text_delta"
+            ) {
+              assistantText += event.assistantMessageEvent.delta;
+              appendCardText(cardState, event.assistantMessageEvent.delta);
+              await ctrl.update(renderAgentCard(cardState));
+            }
+            if (event.type === "tool_execution_start") {
+              startCardTool(cardState, event);
+              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
+            }
+            if (event.type === "tool_execution_end") {
+              finishCardTool(cardState, event);
+              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
+            }
+            if (event.type === "turn_end") {
+              promptError = getAssistantError(event.message);
+              lastTotalTokens = extractTotalTokens(event.message);
+            }
+          });
+
+          try {
+            try {
+              outcome = await runPrompt() ?? {};
+              promptError = outcome.promptError ?? promptError;
+            } catch (err) {
+              promptError = formatError(err);
+              log.error("prompt 失败:", err);
+            }
+
+            const elapsed = Date.now() - started;
+            const metrics = {
+              totalTokens: lastTotalTokens,
+              contextWindow: entry.harness.getModel().contextWindow,
+              elapsedMs: elapsed,
+            };
+
+            if (promptError) {
+              log.warn(`回复失败 chat=${msg.chatId} 耗时=${elapsed}ms: ${promptError}`);
+              cardState.terminal = "error";
+              cardState.footer = null;
+              cardState.status = outcome.errorStatus ?? `> 处理失败：${promptError}`;
+              cardState.metrics = metrics;
+              await ctrl.update(renderAgentCard(cardState));
+              return;
+            }
+
+            log.info(`回复完成 chat=${msg.chatId} 耗时=${elapsed}ms`);
+            cardState.terminal = "done";
+            cardState.footer = null;
+            cardState.status = outcome.successStatus;
+            cardState.metrics = metrics;
+            await ctrl.update(renderAgentCard(cardState));
+          } finally {
+            unsubscribe();
+          }
+        },
+      },
+    },
+    replyOptions(msg),
+  );
+
+  return {
+    messageId: sent.messageId,
+    assistantText,
+  };
+}
 
 export function isDiaryEntryMessage(msg: NormalizedMessage): boolean {
   return !msg.replyToMessageId && !msg.rootId;
@@ -59,105 +157,48 @@ export async function handleDiaryMessage(
       : `处理日记回复 chat=${msg.chatId} replyTo=${msg.replyToMessageId ?? "unknown"}`,
   );
 
-  let assistantText = "";
-  const sent = await channel.stream(
-    msg.chatId,
-    {
-      card: {
-        initial: renderAgentCard(createAgentCardState()),
-        producer: async (ctrl) => {
-          const cardState = createAgentCardState();
-          let promptError: string | null = null;
-
-          let lastTotalTokens = 0;
-
-          const unsubscribe = entry.harness.subscribe(async (event) => {
-            if (
-              event.type === "message_update" &&
-              event.assistantMessageEvent.type === "text_delta"
-            ) {
-              assistantText += event.assistantMessageEvent.delta;
-              appendCardText(cardState, event.assistantMessageEvent.delta);
-              await ctrl.update(renderAgentCard(cardState));
-            }
-            if (event.type === "tool_execution_start") {
-              startCardTool(cardState, event);
-              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
-            }
-            if (event.type === "tool_execution_end") {
-              finishCardTool(cardState, event);
-              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
-            }
-            if (event.type === "turn_end") {
-              promptError = getAssistantError(event.message);
-              lastTotalTokens = extractTotalTokens(event.message);
-            }
-          });
-
-          try {
-            const started = Date.now();
-            let episodeResult: { fallbackReason?: string; promptError?: string } = {};
-            try {
-              if (mode === "entry") {
-                episodeResult = await distillDiaryEntry({
-                  harnessManager,
-                  message,
-                });
-                promptError = episodeResult.promptError ?? null;
-              } else {
-                await entry.harness.prompt(
-                  await formatDiaryPrompt(message, harnessManager),
-                );
-              }
-            } catch (err) {
-              promptError = formatError(err);
-              diaryLog.error("prompt 失败:", err);
-            }
-            const elapsed = Date.now() - started;
-
-            const contextWindow = entry.harness.getModel().contextWindow;
-            const buildMetrics = () => ({
-              totalTokens: lastTotalTokens,
-              contextWindow,
-              elapsedMs: elapsed,
+  const sent = await (async () => {
+    try {
+      return await streamAgentReply(
+        channel,
+        msg,
+        entry,
+        async () => {
+          if (mode === "entry") {
+            const episodeResult = await distillDiaryEntry({
+              harnessManager,
+              message,
             });
-
-            if (promptError) {
-              diaryLog.warn(`prompt 失败 耗时=${elapsed}ms: ${promptError}`);
-              cardState.terminal = "error";
-              cardState.footer = null;
-              cardState.status = mode === "entry"
-                ? `> ${episodeResult.fallbackReason ?? `处理失败，已保存原文和兜底 episode：${promptError}`}`
-                : `> 处理失败：${promptError}`;
-              cardState.metrics = buildMetrics();
-              await ctrl.update(renderAgentCard(cardState));
-              return;
-            }
-            diaryLog.info(`prompt 完成 耗时=${elapsed}ms`);
-
-            cardState.terminal = "done";
-            cardState.footer = null;
-            cardState.status = episodeResult.fallbackReason
-              ? `> ${episodeResult.fallbackReason}`
-              : undefined;
-            cardState.metrics = buildMetrics();
-            await ctrl.update(renderAgentCard(cardState));
-          } finally {
-            unsubscribe();
-            entry.currentEpisodeSource = null;
+            return {
+              promptError: episodeResult.promptError ?? null,
+              successStatus: episodeResult.fallbackReason
+                ? `> ${episodeResult.fallbackReason}`
+                : undefined,
+              errorStatus: episodeResult.fallbackReason
+                ? `> ${episodeResult.fallbackReason}`
+                : episodeResult.promptError
+                  ? `> 处理失败，已保存原文和兜底 episode：${episodeResult.promptError}`
+                  : undefined,
+            };
           }
+          await entry.harness.prompt(
+            await formatDiaryPrompt(message, harnessManager),
+          );
+          return undefined;
         },
-      },
-    },
-    replyOptions(msg),
-  );
+        diaryLog,
+      );
+    } finally {
+      entry.currentEpisodeSource = null;
+    }
+  })();
 
   messageService.saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: message.conversationId,
     conversationType: message.conversationType,
-    content: assistantText || "（卡片回复）",
+    content: sent.assistantText || "（卡片回复）",
     replyTo: message.id,
     threadId: message.threadId,
     rootId: message.rootId,
@@ -179,83 +220,17 @@ export async function handleChatMessage(
   harnessManager.recordActivity(scopeId, messageTime);
   await promoteKnowledgeIfNeeded(message, harnessManager);
   larkLog.info(`处理对话 scope=${scopeId} type=${chatType}`);
-  const started = Date.now();
 
-  let assistantText = "";
-  const sent = await channel.stream(
-    msg.chatId,
-    {
-      card: {
-        initial: renderAgentCard(createAgentCardState()),
-        producer: async (ctrl) => {
-          const cardState = createAgentCardState();
-          let promptError: string | null = null;
-
-          let lastTotalTokens = 0;
-
-          const unsubscribe = entry.harness.subscribe(async (event) => {
-            if (
-              event.type === "message_update" &&
-              event.assistantMessageEvent.type === "text_delta"
-            ) {
-              assistantText += event.assistantMessageEvent.delta;
-              appendCardText(cardState, event.assistantMessageEvent.delta);
-              await ctrl.update(renderAgentCard(cardState));
-            }
-            if (event.type === "tool_execution_start") {
-              startCardTool(cardState, event);
-              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
-            }
-            if (event.type === "tool_execution_end") {
-              finishCardTool(cardState, event);
-              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
-            }
-            if (event.type === "turn_end") {
-              promptError = getAssistantError(event.message);
-              lastTotalTokens = extractTotalTokens(event.message);
-            }
-          });
-
-          try {
-            try {
-              await entry.harness.prompt(
-                await formatChatPrompt(message, harnessManager),
-              );
-            } catch (err) {
-              promptError = formatError(err);
-              larkLog.error("prompt 失败:", err);
-            }
-            const elapsed = Date.now() - started;
-            const contextWindow = entry.harness.getModel().contextWindow;
-            const metrics = {
-              totalTokens: lastTotalTokens,
-              contextWindow,
-              elapsedMs: elapsed,
-            };
-
-            if (promptError) {
-              larkLog.warn(
-                `回复失败 chat=${msg.chatId} 耗时=${elapsed}ms: ${promptError}`,
-              );
-              cardState.terminal = "error";
-              cardState.footer = null;
-              cardState.status = `> 处理失败：${promptError}`;
-              cardState.metrics = metrics;
-              await ctrl.update(renderAgentCard(cardState));
-              return;
-            }
-            larkLog.info(`回复完成 chat=${msg.chatId} 耗时=${elapsed}ms`);
-            cardState.terminal = "done";
-            cardState.footer = null;
-            cardState.metrics = metrics;
-            await ctrl.update(renderAgentCard(cardState));
-          } finally {
-            unsubscribe();
-          }
-        },
-      },
+  const sent = await streamAgentReply(
+    channel,
+    msg,
+    entry,
+    async () => {
+      await entry.harness.prompt(
+        await formatChatPrompt(message, harnessManager),
+      );
     },
-    replyOptions(msg),
+    larkLog,
   );
 
   messageService.saveAssistantMessage({
@@ -263,11 +238,70 @@ export async function handleChatMessage(
     source: "lark",
     conversationId: message.conversationId,
     conversationType: message.conversationType,
-    content: assistantText || "（卡片回复）",
+    content: sent.assistantText || "（卡片回复）",
     replyTo: message.id,
     threadId: message.threadId,
     rootId: message.rootId,
   });
+}
+
+export async function handleLensMessage(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  channel: LarkChannel,
+  harnessManager: HarnessManager,
+  chatType: "dm" | "topic" | "thread",
+  lens: ParsedLens,
+): Promise<void> {
+  const target = lens.body || buildLensReplyTarget(message, harnessManager);
+  if (!target) {
+    await channel.send(
+      msg.chatId,
+      { text: "命令后面给内容，或回复某条消息" },
+      replyOptions(msg),
+    );
+    return;
+  }
+
+  const scopeId = message.conversationId;
+  const entry = await harnessManager.getOrCreate(scopeId, chatType);
+  const messageService = harnessManager.getMessageService();
+  messageService.saveUserMessage(message);
+  harnessManager.recordActivity(scopeId, message.occurredAt);
+  larkLog.info(`处理 lens scope=${scopeId} type=${chatType} lens=${lens.lens}`);
+
+  const restoreToolNames = entry.harness.getActiveTools().map((tool) => tool.name);
+
+  try {
+    await entry.harness.setActiveTools(lensToolNames(lens));
+    const sent = await streamAgentReply(
+      channel,
+      msg,
+      entry,
+      async () => {
+        await entry.harness.prompt(formatLensPrompt(lens.lens, target));
+      },
+      larkLog,
+    );
+
+    messageService.saveAssistantMessage({
+      id: larkMessageId(sent.messageId)!,
+      source: "lark",
+      conversationId: message.conversationId,
+      conversationType: message.conversationType,
+      content: sent.assistantText || "（卡片回复）",
+      replyTo: message.id,
+      threadId: message.threadId,
+      rootId: message.rootId,
+    });
+  } finally {
+    await entry.harness.setActiveTools(restoreToolNames);
+  }
+}
+
+function lensToolNames(lens: ParsedLens): string[] {
+  if (lens.lens !== "plain") return [];
+  return isWebSearchConfigured() ? ["web_search", "fetch_article"] : ["fetch_article"];
 }
 
 export async function handleNotificationMessage(
@@ -356,6 +390,16 @@ ${parent.content}
 
 --- 当前用户消息 ---
 `;
+}
+
+function buildLensReplyTarget(
+  message: IngestedMessage,
+  harnessManager: HarnessManager,
+): string {
+  const contextMessageId = message.replyTo ?? message.rootId;
+  if (!contextMessageId) return "";
+  const parent = harnessManager.getMessageService().get(contextMessageId);
+  return parent?.content.trim() ?? "";
 }
 
 async function promoteKnowledgeIfNeeded(

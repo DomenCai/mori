@@ -6,6 +6,7 @@ import { larkConversationId } from "./ingest.js";
 import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
 import { renderInfoCard, renderProfileHistoryCard } from "./cards.js";
 import type { DailyMemoryRun } from "../memory/service.js";
+import { parseLens } from "./lenses.js";
 
 export interface CommandContext {
   channel: LarkChannel;
@@ -20,6 +21,9 @@ interface CommandResult {
 }
 
 const HELP_TEXT = `/help - 查看命令列表
+/think <内容> - 顺着为什么往下钻；也可回复一条消息使用
+/rank <内容> - 把一个领域砍到两三根生成器；也可回复一条消息使用
+/plain <内容> - 用大白话讲到能复述；也可回复一条消息使用
 /new-diary-group - 创建一个日记群
 /new-chat <主题> - 创建一个持续主题群
 /new - 重置当前会话
@@ -43,6 +47,7 @@ export async function handleCommand(
   ctx: CommandContext,
 ): Promise<CommandResult> {
   const text = msg.content.trim();
+  if (parseLens(text)) return { handled: false };
   if (!text.startsWith("/")) return { handled: false };
 
   const [cmd, ...args] = text.split(/\s+/);

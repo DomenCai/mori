@@ -9,9 +9,10 @@ import {
 } from "../schemas.js";
 import { fetchArticle, slugify, VaultService } from "../../knowledge/vault.js";
 import { nowISO } from "../../utils.js";
+import { createWebSearchTool, isWebSearchConfigured } from "./web-search.js";
 
 export function createKnowledgeTools(vault: VaultService): AgentTool<any>[] {
-  return [
+  const tools: AgentTool<any>[] = [
     createFetchArticleTool(),
     createSaveToGardenTool(vault),
     createGrepVaultTool(vault),
@@ -19,6 +20,10 @@ export function createKnowledgeTools(vault: VaultService): AgentTool<any>[] {
     createUpdateFrontmatterTool(vault),
     createPromoteTool(vault),
   ];
+  if (isWebSearchConfigured()) {
+    tools.unshift(createWebSearchTool());
+  }
+  return tools;
 }
 
 function createFetchArticleTool(): AgentTool<typeof FetchArticleParams> {

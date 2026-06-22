@@ -76,6 +76,10 @@
   "knowledge": {
     "index": {
       "checkIntervalMs": 3600000
+    },
+    "search": {
+      "provider": "tavily",
+      "apiKeyEnv": "TAVILY_API_KEY"
     }
   }
 }
