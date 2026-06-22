@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
   id TEXT PRIMARY KEY,
   week_key TEXT NOT NULL UNIQUE,
   summary TEXT NOT NULL,
+  friend_note TEXT,
   created_at TEXT NOT NULL
 );
 

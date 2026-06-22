@@ -128,13 +128,12 @@ ${episodeSummaries || "（无 episode）"}
 当前 profile：
 ${memoryService.getProfile()}
 
-做完必要工具调用后，直接输出周记录正文。`;
+做完必要工具调用后，最终回复必须严格使用下面格式：
+<weekly_record>
+三五句客观周记录正文
+</weekly_record>
 
-  const friendPrompt = `现在脱下分析的帽子。
-
-你不是在写周报——你就是 soul 里那个很懂我的朋友，刚把我这一整周看完了。跟我说几句话：挑一两件你真正想说的（一个你注意到的模式、一个想点破的盲点、或者一句真心话），别复盘我这周做了什么、我自己清楚。按你一贯的语气，几句话就够。
-
-这一轮只说话，不要调用任何工具。`;
+标签外不要写任何内容。标签内只写周记录正文；不要写画像评估、推理过程、结论说明或工具调用说明。`;
 
   let captured = "";
   const unsubscribe = entry.harness.subscribe(async (event) => {
@@ -156,7 +155,7 @@ ${memoryService.getProfile()}
     captured = "";
     await entry.harness.setActiveTools(["update_profile", "search_memory"]);
     await entry.harness.prompt(mechanicalPrompt);
-    const recapText = captured.trim();
+    const recapText = extractWeeklyRecap(captured);
 
     const profileChanges = memoryService
       .getProfileRevisionsByRun(runId)
@@ -192,14 +191,9 @@ ${memoryService.getProfile()}
       }
     }
 
-    const saveWeeklySummary = (text: string) =>
-      db
-        .prepare(
-          "INSERT OR REPLACE INTO weekly_summaries (id, week_key, summary, created_at) VALUES (?, ?, ?, ?)",
-        )
-        .run(genId("ws"), wk, text, harnessManager.getClock().nowISO());
-
-    saveWeeklySummary(recordText);
+    db.prepare(
+      "INSERT OR REPLACE INTO weekly_summaries (id, week_key, summary, friend_note, created_at) VALUES (?, ?, ?, NULL, ?)",
+    ).run(genId("ws"), wk, recordText, harnessManager.getClock().nowISO());
     db.prepare(
       `INSERT INTO agent_runs (id, scope_id, command, model, tool_calls_json, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -212,36 +206,22 @@ ${memoryService.getProfile()}
       "completed",
       harnessManager.getClock().nowISO(),
     );
-
-    if (friendRound) {
-      try {
-        captured = "";
-        await entry.harness.setActiveTools([]);
-        await entry.harness.prompt(friendPrompt);
-        const friendText = captured.trim();
-        if (friendText) {
-          if (sendCards && channel) {
-            const friendCard = renderWeeklyFriendCard(friendText);
-            for (const chatId of diaryChats) {
-              const sent = await channel.send(chatId, { card: friendCard });
-              messageService.saveAssistantMessage({
-                id: larkMessageId(sent.messageId)!,
-                source: "lark",
-                conversationId: larkChatConversationId(chatId),
-                conversationType: "diary",
-                content: friendText,
-              });
-            }
-          }
-          saveWeeklySummary(`${friendText}\n\n--- 本周记录 ---\n\n${recordText}`);
-        }
-      } catch (err) {
-        log.warn(`朋友轮失败，已保留本周记录：${err}`);
-      }
-    }
   } finally {
     unsubscribe();
     await harnessManager.resetSession(scopeId);
+  }
+
+  if (friendRound) {
+    await runFriendAgent({
+      harnessManager,
+      db,
+      episodes,
+      wk,
+      runId,
+      channel,
+      diaryChats,
+      sendCards,
+    });
   }
 }
 
@@ -302,4 +282,138 @@ function buildWeeklyRecordText(
     );
   }
   return parts.join("\n\n");
+}
+
+function extractWeeklyRecap(raw: string): string {
+  const text = raw.trim();
+  const tagMatch = /<weekly_record>\s*([\s\S]*?)\s*<\/weekly_record>/i.exec(text);
+  if (tagMatch) return tagMatch[1].trim();
+
+  const headings = [
+    /(?:^|\n)\s*(?:---\s*)?\s*(?:#{1,6}\s*)?(?:\*\*)?周记录（[^）]+）[:：]?(?:\*\*)?\s*\n+/g,
+    /(?:^|\n)\s*(?:---\s*)?\s*(?:#{1,6}\s*)?(?:\*\*)?周记录[^:\n：]*[:：](?:\*\*)?\s*/g,
+    /(?:^|\n)\s*(?:---\s*)?\s*(?:#{1,6}\s*)?(?:\*\*)?(?:周记录正文|客观记录正文)[:：](?:\*\*)?\s*/g,
+  ];
+  let lastMatch: RegExpExecArray | null = null;
+  for (const heading of headings) {
+    let match: RegExpExecArray | null;
+    while ((match = heading.exec(text)) !== null) {
+      if (!lastMatch || match.index > lastMatch.index) {
+        lastMatch = match;
+      }
+    }
+  }
+  if (!lastMatch) return text;
+  return text.slice(lastMatch.index + lastMatch[0].length).trim();
+}
+
+async function runFriendAgent(opts: {
+  harnessManager: HarnessManager;
+  db: Database.Database;
+  episodes: Array<Record<string, any>>;
+  wk: string;
+  runId: string;
+  channel?: LarkChannel;
+  diaryChats: string[];
+  sendCards: boolean;
+}): Promise<void> {
+  const { harnessManager, db, episodes, wk, runId, channel, diaryChats, sendCards } =
+    opts;
+  const diaryService = harnessManager.getDiaryService();
+  const messageService = harnessManager.getMessageService();
+  const scopeId = `consolidation_friend_${runId}`;
+  const entry = await harnessManager.getOrCreate(scopeId, "consolidation", { runId });
+
+  let captured = "";
+  const unsubscribe = entry.harness.subscribe(async (event) => {
+    if (
+      event.type === "message_update" &&
+      event.assistantMessageEvent.type === "text_delta"
+    ) {
+      captured += event.assistantMessageEvent.delta;
+    }
+  });
+
+  try {
+    const weekTranscript = buildWeekUserTranscript(diaryService, episodes);
+    const priorNotes = getPriorFriendNotes(db, wk, 4);
+    await entry.harness.setActiveTools([]);
+    await entry.harness.prompt(buildFriendPrompt(weekTranscript, priorNotes));
+    const friendText = captured.trim();
+    if (!friendText) return;
+
+    if (sendCards && channel) {
+      const friendCard = renderWeeklyFriendCard(friendText);
+      for (const chatId of diaryChats) {
+        const sent = await channel.send(chatId, { card: friendCard });
+        messageService.saveAssistantMessage({
+          id: larkMessageId(sent.messageId)!,
+          source: "lark",
+          conversationId: larkChatConversationId(chatId),
+          conversationType: "diary",
+          content: friendText,
+        });
+      }
+    }
+
+    db.prepare(
+      "UPDATE weekly_summaries SET friend_note = ? WHERE week_key = ?",
+    ).run(friendText, wk);
+  } catch (err) {
+    log.warn(`朋友轮失败，已保留本周记录：${err}`);
+  } finally {
+    unsubscribe();
+    await harnessManager.resetSession(scopeId);
+  }
+}
+
+function buildWeekUserTranscript(
+  diaryService: ReturnType<HarnessManager["getDiaryService"]>,
+  episodes: Array<Record<string, any>>,
+): string {
+  const parts = episodes
+    .map((ep) => {
+      const transcript = buildUserEpisodeTranscript(
+        diaryService.getSourceMessagesForEpisode(ep as any),
+      );
+      return transcript ? `[${ep.occurred_at}]\n${transcript}` : "";
+    })
+    .filter(Boolean);
+  return parts.join("\n\n---\n\n") || "（本周没有原话记录）";
+}
+
+function getPriorFriendNotes(
+  db: Database.Database,
+  wk: string,
+  limit: number,
+): string {
+  const rows = db
+    .prepare(
+      `SELECT week_key, friend_note FROM weekly_summaries
+       WHERE week_key < ? AND friend_note IS NOT NULL
+       ORDER BY week_key DESC
+       LIMIT ?`,
+    )
+    .all(wk, limit) as Array<{ week_key: string; friend_note: string }>;
+  if (rows.length === 0) return "（还没有更早的周回复）";
+  return rows
+    .reverse()
+    .map((r) => `【${r.week_key}】\n${r.friend_note}`)
+    .join("\n\n");
+}
+
+function buildFriendPrompt(weekTranscript: string, priorNotes: string): string {
+  return `现在脱下分析的帽子。你就是 soul 里那个很懂我的朋友，刚把我这一整周、连着前几周一起看完了。
+
+你站得比每天都高。日常回复只看得见当天，你看得见跨度，这一轮的价值全在这。别复盘我这周干了什么，我自己清楚。去说那些把几周连起来才看得见的东西：这周真正的主线是哪条（底下那条情绪和判断的线，不是事件清单）；有没有反复出现的主题或卡点，前几周也来过的那种，反复出现的多半不是这周的偶发情绪；有没有我自己没看见、或一直在绕开的那条缝，看到就点，别硬找。
+
+可以引具体某句某事来落地你的判断，但落脚是你的读，不是我的流水账。想说多少说多少，该长就长该一句就一句，别为显得有料硬撑长度。按你一贯的语气，像给我写几句话，不像交周报。
+
+本周我写的原话：
+${weekTranscript}
+
+前几周我给你看完后你说的话，别和它们重样；如果发现自己又想说同样的话，那本身就值得跟我点出来：
+${priorNotes}
+
+这一轮只说话，不调用任何工具。`;
 }

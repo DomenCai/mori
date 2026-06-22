@@ -8,6 +8,7 @@ import type { Clock } from "../clock.js";
 import { systemClock } from "../clock.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const DB_SCHEMA_VERSION = 1;
 
 let _db: Database.Database | null = null;
 
@@ -22,7 +23,31 @@ export function getDb(path: string = defaultDbPath): Database.Database {
 export function initDb(db: Database.Database, clock: Clock = systemClock): void {
   const schema = readSchema();
   db.exec(schema);
+  applyDbMigrations(db);
+  ensureProfileRow(db, clock);
+}
 
+function applyDbMigrations(db: Database.Database): void {
+  const version = db.pragma("user_version", { simple: true }) as number;
+  if (version >= DB_SCHEMA_VERSION) return;
+
+  db.transaction(() => {
+    if (version < 1 && !weeklySummariesHasFriendNote(db)) {
+      db.exec("ALTER TABLE weekly_summaries ADD COLUMN friend_note TEXT");
+    }
+
+    db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+  })();
+}
+
+function weeklySummariesHasFriendNote(db: Database.Database): boolean {
+  const cols = db
+    .prepare("PRAGMA table_info(weekly_summaries)")
+    .all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === "friend_note");
+}
+
+function ensureProfileRow(db: Database.Database, clock: Clock): void {
   const profileExists = db
     .prepare("SELECT 1 FROM profile WHERE id = 1")
     .get();
