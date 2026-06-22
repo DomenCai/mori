@@ -40,10 +40,14 @@ personal-agent run
 
 ```bash
 personal-agent start     # 后台 detached 启动，写 pid，日志重定向到文件
-personal-agent status    # 是否在运行 + pid + 日志路径
+personal-agent status    # 是否在运行 + pid + 运行中版本 + 日志路径
 personal-agent stop      # 停止
 personal-agent run       # 前台运行（调试 / 首次扫码用）
+personal-agent update    # 拉取最新代码、重建并按原状态重启（见「升级」）
+personal-agent -v        # 当前产物版本
 ```
+
+`-v` 显示当前命令会运行的编译产物版本，来自 build 时写入的 `dist/build-info.json`。`status` 显示 daemon 启动时冻结进 pid 的启动版本；如果当前产物已经 rebuild 但 daemon 还没重启，`status` 会同时显示“启动版本”和“当前产物版本”。版本不读源码 `package.json`，裸 `git pull` 不影响，只有重新 build 才会变。
 
 `start` 会先检查是否已在运行、飞书是否已配置，再 fork 后台进程。pid 文件由 `start` 写、`stop` 删，并记录进程启动时间和脚本路径；`stop/status` 会先校验进程归属，进程异常退出或 PID 复用后的残留 pid 会被识别和清理。旧格式 pid 文件若对应进程仍存活，会拒绝自动停止，避免误杀无关进程。
 
@@ -72,6 +76,17 @@ LOG_LEVEL=debug personal-agent run   # 临时调高日志级别
 ```
 
 ## 升级
+
+**clone + link 部署**（当前安装目录本身就是本地 git 工作副本）用内置命令一键升级：
+
+```bash
+personal-agent update          # fetch 比对 → pull → 装依赖(仅 lock 变化) → build → 同步 setting.json → 重启
+personal-agent update --check  # 只读检查远端 HEAD，不改工作树、不 fetch、不重启
+```
+
+`update` 只支持 clone + link 部署；如果当前安装不是 git 工作副本，会提示改用重新安装。它全程让旧进程继续服务：`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口（更新前在运行才重启）。它只会按 allowlist 补齐允许自动补的 `setting.json` 缺失字段，不做整份模板递归同步；已有值不覆盖。要求工作树干净；`dev` 模式不可用。
+
+**全局包安装**（`pnpm add -g github:...`）则重新安装：
 
 ```bash
 pnpm add -g github:DomenCai/PersonalAgent   # 重新安装最新版

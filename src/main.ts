@@ -5,6 +5,7 @@ import {
   saveLarkConfig,
   loadLlmConfig,
   loadSetting,
+  loadAppVersion,
   resolveModelRoute,
   sessionsDir,
   logsDir,
@@ -30,6 +31,7 @@ import { parseLens } from "./lark/lenses.js";
 import { initSchedules } from "./schedule/cron.js";
 import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
+import { runUpdate } from "./update.js";
 import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
 import { toggleScheduleEnabled } from "./schedule/config.js";
 import { toIngestedMessage } from "./lark/ingest.js";
@@ -269,8 +271,33 @@ function resolveLarkConversationType(
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────
+const HELP = `personal-agent — 飞书优先的对话型个人 Agent
+
+用法: personal-agent <命令>
+
+命令:
+  run               前台运行（调试 / 首次扫码注册用）
+  start             后台守护启动
+  stop              停止后台守护
+  status            查看运行状态
+  update [--check]  拉取最新代码、重建并按原状态重启；--check 只查不更新
+  help, -h, --help  显示本帮助
+  version, -v, --version  显示版本号
+
+不带命令时默认为 run。`;
+
 const command = process.argv[2] ?? "run";
 switch (command) {
+  case "help":
+  case "-h":
+  case "--help":
+    console.log(HELP);
+    break;
+  case "version":
+  case "-v":
+  case "--version":
+    console.log(loadAppVersion());
+    break;
   case "start":
     startDaemon();
     break;
@@ -280,6 +307,9 @@ switch (command) {
   case "status":
     showStatus();
     break;
+  case "update":
+    runUpdate({ check: process.argv.slice(3).includes("--check") });
+    break;
   case "run":
     runForeground().catch((err) => {
       bootLog.error("启动失败:", err);
@@ -287,6 +317,6 @@ switch (command) {
     });
     break;
   default:
-    bootLog.error(`未知命令: ${command}（可用: start | stop | status | run）`);
+    bootLog.error(`未知命令: ${command}（可用: run | start | stop | status | update | help | version）`);
     process.exit(1);
 }

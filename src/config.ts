@@ -109,6 +109,13 @@ export interface ScriptRuntimeConfig {
   };
 }
 
+export interface BuildInfo {
+  name: string;
+  version: string;
+  builtAt: string | null;
+  gitCommit: string | null;
+}
+
 let _config: LlmConfig | null = null;
 let _setting: SettingConfig | null = null;
 
@@ -193,8 +200,40 @@ const isDev = !!process.env.PERSONAL_AGENT_DEV;
 const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".personal-agent");
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+// 生产读构建时冻结在 dist/build-info.json 的产物信息；dev 下 fallback 到源码 package.json。
+// 不缓存：update 进程会在自身生命周期内 build 出新 dist，需读到 build 后的新值。
+export function loadBuildInfo(): BuildInfo {
+  const localBuildInfo = join(dirname(fileURLToPath(import.meta.url)), "build-info.json");
+  if (existsSync(localBuildInfo)) {
+    const info = JSON.parse(readFileSync(localBuildInfo, "utf-8")) as Partial<BuildInfo>;
+    if (typeof info.version === "string" && info.version.length > 0) {
+      return {
+        name: typeof info.name === "string" && info.name ? info.name : "personal-agent",
+        version: info.version,
+        builtAt: typeof info.builtAt === "string" ? info.builtAt : null,
+        gitCommit: typeof info.gitCommit === "string" ? info.gitCommit : null,
+      };
+    }
+  }
+
+  const pkgPath = join(REPO_ROOT, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  return {
+    name: typeof pkg.name === "string" ? pkg.name : "personal-agent",
+    version: pkg.version as string,
+    builtAt: null,
+    gitCommit: null,
+  };
+}
+
+export function loadAppVersion(): string {
+  return loadBuildInfo().version;
+}
+
 const LARK_CONFIG_FILE = join(ROOT, "lark_config.json");
 export const rootDir = ROOT;
+export const repoDir = REPO_ROOT;
+export const isDevMode = isDev;
 export const sessionsDir = join(ROOT, "sessions");
 export const dbPath = join(ROOT, "app.db");
 export const logsDir = join(ROOT, "logs");

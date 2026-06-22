@@ -9,7 +9,7 @@ import {
   unlinkSync,
   mkdirSync,
 } from "node:fs";
-import { loadLarkConfig, loadSetting, logsDir, pidPath } from "./config.js";
+import { loadLarkConfig, loadSetting, loadAppVersion, logsDir, pidPath } from "./config.js";
 import { dailyLogPath, logger } from "./log.js";
 
 const bootLog = logger("boot");
@@ -19,6 +19,8 @@ interface PidRecord {
   pid: number;
   scriptPath: string;
   startedAt: string;
+  /** 启动时的 app 版本；旧 pid 文件没有此字段，故可选。 */
+  appVersion?: string;
 }
 
 interface LegacyPidRecord {
@@ -61,6 +63,7 @@ function readPidRecord(): StoredPidRecord | null {
         pid: parsed.pid,
         scriptPath: parsed.scriptPath,
         startedAt: parsed.startedAt,
+        ...(typeof parsed.appVersion === "string" ? { appVersion: parsed.appVersion } : {}),
       };
     }
   } catch {
@@ -130,6 +133,10 @@ function removePidFile(): void {
   if (existsSync(pidPath)) unlinkSync(pidPath);
 }
 
+export function isDaemonRunning(): boolean {
+  return readDaemonState().kind === "running";
+}
+
 function writePidRecord(pid: number): boolean {
   const scriptPath = process.argv[1];
   const startedAt = readProcessField(pid, "lstart");
@@ -140,6 +147,7 @@ function writePidRecord(pid: number): boolean {
     pid,
     scriptPath,
     startedAt,
+    appVersion: loadAppVersion(),
   };
   writeFileSync(pidPath, JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
   return true;
@@ -205,7 +213,14 @@ export function showStatus(): void {
   loadSetting();
   const state = readDaemonState();
   if (state.kind === "running") {
-    bootLog.info(`运行中 (pid ${state.record.pid})，日志: ${dailyLogPath(logsDir)}`);
+    const running = state.record.appVersion ?? "未知";
+    const artifact = loadAppVersion();
+    const versionText = running === artifact
+      ? `启动版本 ${running}`
+      : `启动版本 ${running}, 当前产物版本 ${artifact}`;
+    bootLog.info(
+      `运行中 (pid ${state.record.pid}, ${versionText})，日志: ${dailyLogPath(logsDir)}`,
+    );
     return;
   }
   if (state.kind === "unverified") {

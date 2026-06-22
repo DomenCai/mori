@@ -7,6 +7,7 @@ import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js
 import { renderInfoCard, renderProfileHistoryCard } from "./cards.js";
 import type { DailyMemoryRun } from "../memory/service.js";
 import { parseLens } from "./lenses.js";
+import { loadAppVersion } from "../config.js";
 
 export interface CommandContext {
   channel: LarkChannel;
@@ -20,7 +21,9 @@ interface CommandResult {
   handled: boolean;
 }
 
-const HELP_TEXT = `/help - 查看命令列表
+function helpText(): string {
+  return `/help - 查看命令列表
+当前版本号：${loadAppVersion()}
 /think <内容> - 顺着为什么往下钻；也可回复一条消息使用
 /rank <内容> - 把一个领域砍到两三根生成器；也可回复一条消息使用
 /plain <内容> - 用大白话讲到能复述；也可回复一条消息使用
@@ -41,6 +44,7 @@ const HELP_TEXT = `/help - 查看命令列表
 /dream YYYY-MM-DD - 查看某天 daily_memory 详情
 /schedules - 查看定时任务配置
 /consolidate - 手动触发周度合并`;
+}
 
 export async function handleCommand(
   msg: NormalizedMessage,
@@ -89,7 +93,7 @@ async function handleHelp(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.channel.send(msg.chatId, { card: renderInfoCard("命令列表", HELP_TEXT) });
+  await ctx.channel.send(msg.chatId, { card: renderInfoCard("命令列表", helpText()) });
   return { handled: true };
 }
 
