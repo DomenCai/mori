@@ -31,7 +31,6 @@ import { parseLens } from "./lark/lenses.js";
 import { initSchedules } from "./schedule/cron.js";
 import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
-import { runUpdate } from "./update.js";
 import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
 import { toggleScheduleEnabled } from "./schedule/config.js";
 import { toIngestedMessage } from "./lark/ingest.js";
@@ -280,7 +279,6 @@ const HELP = `personal-agent — 飞书优先的对话型个人 Agent
   start             后台守护启动
   stop              停止后台守护
   status            查看运行状态
-  update [--check]  拉取最新代码、重建并按原状态重启；--check 只查不更新
   help, -h, --help  显示本帮助
   version, -v, --version  显示版本号
 
@@ -307,9 +305,6 @@ switch (command) {
   case "status":
     showStatus();
     break;
-  case "update":
-    runUpdate({ check: process.argv.slice(3).includes("--check") });
-    break;
   case "run":
     runForeground().catch((err) => {
       bootLog.error("启动失败:", err);
@@ -317,6 +312,6 @@ switch (command) {
     });
     break;
   default:
-    bootLog.error(`未知命令: ${command}（可用: run | start | stop | status | update | help | version）`);
+    bootLog.error(`未知命令: ${command}（可用: run | start | stop | status | help | version）`);
     process.exit(1);
 }

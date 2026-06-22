@@ -43,7 +43,6 @@ personal-agent start     # 后台 detached 启动，写 pid，日志重定向到
 personal-agent status    # 是否在运行 + pid + 运行中版本 + 日志路径
 personal-agent stop      # 停止
 personal-agent run       # 前台运行（调试 / 首次扫码用）
-personal-agent update    # 拉取最新代码、重建并按原状态重启（见「升级」）
 personal-agent -v        # 当前产物版本
 ```
 
@@ -77,14 +76,13 @@ LOG_LEVEL=debug personal-agent run   # 临时调高日志级别
 
 ## 升级
 
-**clone + link 部署**（当前安装目录本身就是本地 git 工作副本）用内置命令一键升级：
+**源码 checkout / link 部署**（当前安装目录本身就是本地 git 工作副本）在仓库根目录运行脚本升级：
 
 ```bash
-personal-agent update          # fetch 比对 → pull → 装依赖(仅 lock 变化) → build → 同步 setting.json → 重启
-personal-agent update --check  # 只读检查远端 HEAD，不改工作树、不 fetch、不重启
+node update.js
 ```
 
-`update` 只支持 clone + link 部署；如果当前安装不是 git 工作副本，会提示改用重新安装。它全程让旧进程继续服务：`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口（更新前在运行才重启）。它只会按 allowlist 补齐允许自动补的 `setting.json` 缺失字段，不做整份模板递归同步；已有值不覆盖。要求工作树干净；`dev` 模式不可用。
+`update.js` 会先执行 `git pull --rebase --autostash`，允许本地有少量 tracked 改动；如果拉取或 autostash 产生冲突，脚本中止，需手动处理后重试。拉取成功后，只要远端带来新提交、当前产物的 `dist/build-info.json` 不是当前 `HEAD`、`personal-agent --version` 与源码 `package.json` 版本不一致、当前工作树有 tracked 改动，或 `node_modules` 缺失，就会执行 `pnpm install --frozen-lockfile`、`pnpm build`、按 allowlist 补齐允许自动补的 `setting.json` 缺失字段，并在更新前 daemon 正在运行时重启。旧版本如果没有 `personal-agent --version`，脚本按 `1.0.0` 处理。`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口。
 
 **全局包安装**（`pnpm add -g github:...`）则重新安装：
 
