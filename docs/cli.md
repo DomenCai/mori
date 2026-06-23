@@ -59,7 +59,8 @@ mori -v        # 当前产物版本
 | `lark_config.json` | 飞书凭据、owner、chat 绑定 |
 | `setting.json` | LLM、时区、会话、HTTP、script 和 knowledge index 配置 |
 | `.env` | LLM API key |
-| `agent/` | 提示词（`soul.md` 等），可按需修改 |
+| `agent/` | 用户 prompt override、说明，以及只读参考用的 `builtin/` |
+| `memory/` | 可编辑的身份画像 `profile.md` 和当前主线 `chapter.md` |
 | `app.db` | SQLite 数据库 |
 | `sessions/` | 会话状态，JSONL 文件按业务时区命名 |
 | `logs/YYYY-MM-DD.log` | 运行日志，按业务时区切分 |
@@ -82,7 +83,7 @@ LOG_LEVEL=debug mori run   # 临时调高日志级别
 node update.js
 ```
 
-`update.js` 会先执行 `git pull --rebase --autostash`，允许本地有少量 tracked 改动；如果拉取或 autostash 产生冲突，脚本中止，需手动处理后重试。拉取成功后，只要远端带来新提交、当前产物的 `dist/build-info.json` 不是当前 `HEAD`、`mori --version` 与源码 `package.json` 版本不一致、当前工作树有 tracked 改动，或 `node_modules` 缺失，就会执行 `pnpm install --frozen-lockfile`、`pnpm build`、按 allowlist 补齐允许自动补的 `setting.json` 缺失字段，并在更新前 daemon 正在运行时重启。旧版本如果没有 `mori --version`，脚本按 `1.0.0` 处理。`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口。
+`update.js` 会先执行 `git pull --rebase --autostash`，允许本地有少量 tracked 改动；如果拉取或 autostash 产生冲突，脚本中止，需手动处理后重试。拉取成功后，只要远端带来新提交、当前产物的 `dist/build-info.json` 不是当前 `HEAD`、`mori --version` 与源码 `package.json` 版本不一致、当前工作树有 tracked 改动，或 `node_modules` 缺失，就会执行 `pnpm install --frozen-lockfile`、`pnpm build`、迁移/补齐允许自动处理的 `setting.json` 字段，并在更新前 daemon 正在运行时重启。旧版本如果没有 `mori --version`，脚本按 `1.0.0` 处理。`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口。
 
 **全局包安装**（`pnpm add -g github:...`）则重新安装：
 
@@ -91,7 +92,7 @@ pnpm add -g github:DomenCai/mori   # 重新安装最新版
 mori stop && mori start
 ```
 
-`~/.mori/` 下的配置和数据不受升级影响。
+`~/.mori/agent/soul.md` 和 `~/.mori/agent/response_style.md` 为空或只有 HTML 注释时，会自动使用升级后的内置 prompt；`~/.mori/agent/builtin/` 会在启动时刷新，方便查看当前版本。`~/.mori/` 下的用户配置、memory 和运行数据不受升级覆盖。
 
 ## 卸载
 

@@ -1,7 +1,10 @@
 import type Database from "better-sqlite3";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Clock } from "../clock.js";
 import { systemClock } from "../clock.js";
 import { genId } from "../utils.js";
+import { memoryDir } from "../config.js";
 import type {
   AdvanceStorylineData,
   CreateStorylineData,
@@ -16,6 +19,13 @@ import type {
 export const EMPTY_PROFILE = "（尚未建立身份画像）";
 export const DORMANT_AFTER_DAYS = 21;
 export const MAX_ACTIVE_STORYLINES = 12;
+
+const PROFILE_FILE = "profile.md";
+const CHAPTER_FILE = "chapter.md";
+
+function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, "").trim();
+}
 
 export interface Storyline {
   id: string;
@@ -108,7 +118,9 @@ type DailyRunRow = Omit<
 };
 
 export class MemoryService {
-  constructor(private db: Database.Database, private clock: Clock = systemClock) {}
+  constructor(private db: Database.Database, private clock: Clock = systemClock) {
+    this.ensureEditableMemoryFiles();
+  }
 
   // ── Profile ──
 
@@ -149,6 +161,7 @@ export class MemoryService {
     const finalContent = newContent!.trim() || EMPTY_PROFILE;
     const now = this.clock.nowISO();
     this.db.prepare("UPDATE profile SET content = ?, updated_at = ? WHERE id = 1").run(finalContent, now);
+    this.writeEditableMemoryFile(PROFILE_FILE, finalContent);
 
     this.db
       .prepare(
@@ -194,6 +207,7 @@ export class MemoryService {
     const newContent = data.content.trim();
     const now = this.clock.nowISO();
     this.db.prepare("UPDATE chapter SET content = ?, updated_at = ? WHERE id = 1").run(newContent, now);
+    this.writeEditableMemoryFile(CHAPTER_FILE, newContent);
     this.db
       .prepare(
         `INSERT INTO chapter_revisions (id, old_content, new_content, source_storyline_ids_json, source_episode_ids_json, reason, run_id, created_at)
@@ -218,6 +232,91 @@ export class MemoryService {
       )
       .all(runId) as ChapterRevisionRow[];
     return rows.map(parseChapterRevision);
+  }
+
+  syncEditableMemoryFiles(): void {
+    const profile = this.readEditableMemoryFile(PROFILE_FILE, this.getProfile())
+      || EMPTY_PROFILE;
+    this.syncProfileRow(profile);
+
+    const chapter = this.readEditableMemoryFile(CHAPTER_FILE, this.getChapter());
+    this.syncChapterRow(chapter);
+  }
+
+  private ensureEditableMemoryFiles(): void {
+    this.ensureEditableMemoryFile(PROFILE_FILE, this.getProfile());
+    this.ensureEditableMemoryFile(CHAPTER_FILE, this.getChapter());
+  }
+
+  private ensureEditableMemoryFile(file: string, content: string): void {
+    const path = join(memoryDir, file);
+    if (existsSync(path)) return;
+    this.writeEditableMemoryFile(file, content);
+  }
+
+  private readEditableMemoryFile(file: string, fallback: string): string {
+    const path = join(memoryDir, file);
+    if (!existsSync(path)) {
+      this.writeEditableMemoryFile(file, fallback);
+    }
+    return stripHtmlComments(readFileSync(path, "utf-8"));
+  }
+
+  private writeEditableMemoryFile(file: string, content: string): void {
+    mkdirSync(memoryDir, { recursive: true, mode: 0o700 });
+    const normalized = content.trim();
+    writeFileSync(join(memoryDir, file), normalized ? `${normalized}\n` : "", {
+      mode: 0o600,
+    });
+  }
+
+  private syncProfileRow(content: string): void {
+    const oldContent = this.getProfile();
+    if (oldContent === content) return;
+    const now = this.clock.nowISO();
+    this.db.prepare("UPDATE profile SET content = ?, updated_at = ? WHERE id = 1").run(
+      content,
+      now,
+    );
+    this.db
+      .prepare(
+        `INSERT INTO profile_revisions (id, old_content, new_content, source_episode_ids_json, reason, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        genId("pr"),
+        oldContent,
+        content,
+        JSON.stringify([]),
+        "manual_file_edit",
+        null,
+        now,
+      );
+  }
+
+  private syncChapterRow(content: string): void {
+    const oldContent = this.getChapter();
+    if (oldContent === content) return;
+    const now = this.clock.nowISO();
+    this.db.prepare("UPDATE chapter SET content = ?, updated_at = ? WHERE id = 1").run(
+      content,
+      now,
+    );
+    this.db
+      .prepare(
+        `INSERT INTO chapter_revisions (id, old_content, new_content, source_storyline_ids_json, source_episode_ids_json, reason, run_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        genId("cr"),
+        oldContent,
+        content,
+        JSON.stringify([]),
+        JSON.stringify([]),
+        "manual_file_edit",
+        null,
+        now,
+      );
   }
 
   // ── Storylines ──

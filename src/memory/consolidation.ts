@@ -172,7 +172,6 @@ ${JSON.stringify(currentVisibleStorylines, null, 2)}
   const messageService = harnessManager.getMessageService();
   try {
     captured = "";
-    await entry.harness.setActiveTools(["update_profile", "set_chapter", "search_memory"]);
     await entry.harness.prompt(mechanicalPrompt);
     const recapText = extractWeeklyRecap(captured);
 
@@ -341,7 +340,10 @@ async function runFriendAgent(opts: {
   const diaryService = harnessManager.getDiaryService();
   const messageService = harnessManager.getMessageService();
   const scopeId = `consolidation_friend_${runId}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "consolidation", { runId });
+  const entry = await harnessManager.getOrCreate(scopeId, "consolidation", {
+    runId,
+    activeToolNames: [],
+  });
 
   let captured = "";
   const unsubscribe = entry.harness.subscribe(async (event) => {
@@ -356,7 +358,6 @@ async function runFriendAgent(opts: {
   try {
     const weekTranscript = buildWeekUserTranscript(diaryService, episodes);
     const priorNotes = getPriorFriendNotes(db, wk, 4);
-    await entry.harness.setActiveTools([]);
     await entry.harness.prompt(buildFriendPrompt(weekTranscript, priorNotes));
     const friendText = captured.trim();
     if (!friendText) return;

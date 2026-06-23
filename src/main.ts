@@ -6,7 +6,7 @@ import {
   loadLlmConfig,
   loadSetting,
   loadAppVersion,
-  resolveModelRoute,
+  resolveProfile,
   sessionsDir,
   logsDir,
   type LarkConfig,
@@ -19,7 +19,7 @@ import {
   renderSchedulesCard,
   type CommandContext,
 } from "./lark/commands.js";
-import { HarnessManager } from "./agent/harness.js";
+import { HarnessManager, type HarnessModelProfile } from "./agent/harness.js";
 import {
   handleChatMessage,
   handleDiaryMessage,
@@ -67,16 +67,15 @@ async function runForeground() {
 
   bootLog.info("配置加载完成");
 
-  const companionRoute = {
-    name: "companion" as const,
-    ...resolveModelRoute("companion", llmConfig),
-  };
-  const weeklyRoute = {
-    name: "weekly" as const,
-    ...resolveModelRoute("weekly", llmConfig),
-  };
+  // 启动时把每个档位解析一次（保持 prompt 缓存稳定）；chatType→档位的分派交给 chat_types 配置。
+  const profiles: Record<string, HarnessModelProfile> = {};
+  for (const name of Object.keys(llmConfig.model_profiles)) {
+    profiles[name] = { name, ...resolveProfile(name, llmConfig) };
+  }
   bootLog.info(
-    `模型路由: companion → ${companionRoute.model.id}, weekly → ${weeklyRoute.model.id}`,
+    `模型档位: ${Object.values(profiles)
+      .map((p) => `${p.name} → ${p.model.id}`)
+      .join(", ")}`,
   );
 
   const db = getDb();
@@ -91,10 +90,8 @@ async function runForeground() {
   const harnessManager = new HarnessManager({
     db,
     sessionsDir,
-    routes: {
-      companion: companionRoute,
-      weekly: weeklyRoute,
-    },
+    profiles,
+    chatTypes: llmConfig.chat_types,
     channel,
     registry,
   });

@@ -17,6 +17,8 @@ There is currently no dedicated test or lint script. Use `pnpm build` as the min
 
 Use TypeScript with `strict` mode and ESM `NodeNext` imports. Include `.js` extensions in relative runtime imports, matching existing files such as `./storage/db.js`. Follow the current style: 2-space indentation, semicolons, double quotes, named exports, and clear service-style classes. Keep modules focused on one responsibility and avoid adding abstraction layers unless there are multiple real implementations.
 
+Agent harness 的工具集在 `getOrCreate` / `createEntry` 时一次定死，会话存活期间不要再调 `harness.setActiveTools` 改它——改工具集会让整段 prompt 缓存失效（cacheRead 归零、全量重写）。要按轮限制能调哪些工具，用 `agent/toolGuard.ts`：创建时设默认禁用集，每轮 `block` / `reset`，只在调用层拦截、不动工具定义。
+
 ## Testing Guidelines
 
 No test framework is configured yet. For behavior changes, add targeted tests only after introducing a test runner and a `pnpm test` script. Prefer high-value coverage around memory updates, SQLite schema/queries, command routing, and Feishu message handling. Name test files after the unit under test, for example `memory/service.test.ts`.

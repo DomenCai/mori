@@ -11,7 +11,7 @@
 | 生产 | 正常运行 CLI | `~/.mori` |
 | 开发 | `pnpm dev`（已设 `MORI_DEV=1`） | 项目内 `./data` |
 
-生产模式下，用户可改的 `.env`、`setting.json` 和 `agent/` 首次缺失时会从仓库模板 seed 到 ROOT，之后改 ROOT 里的副本。开发模式直接读写仓库原位文件；真实 `data/setting.json`、`data/lark_config.json`、`data/schedules.json` 都是私有运行配置，不提交。
+生产模式下，用户可改的 `.env`、`setting.json`、`agent/` 和 `memory/` 首次缺失时会 seed 到 ROOT，之后改 ROOT 里的副本。开发模式直接读写仓库原位 prompt，运行状态仍在 `data/`；真实 `data/setting.json`、`data/lark_config.json`、`data/schedules.json` 都是私有运行配置，不提交。
 
 ## 配置文件一览
 
@@ -21,7 +21,9 @@
 | `lark_config.json` | 首次扫码向导 + 运行时自动更新 | 飞书凭据、owner、chat 绑定 | 只放飞书相关状态 |
 | `schedules.json` | 人手编辑 + `/schedules` 卡片动作 | 定时任务启停、cron 覆盖、script 任务定义 | 不存运行历史 |
 | `.env` | 模板 seed 后人手编辑 | LLM API key | 只放 secret value |
-| `agent/*.md` | 模板 seed 后人手编辑 | 提示词与策略文本 | 重启后生效 |
+| `agent/soul.md`、`agent/response_style.md` | 模板 seed 后人手编辑 | 用户 prompt override | 新 session 生效；空文件回退内置 |
+| `agent/builtin/*.md` | 启动时自动刷新 | 当前版本内置 prompt，只供查看 | 运行时不读取 |
+| `memory/profile.md`、`memory/chapter.md` | 程序写入 + 人手编辑 | 身份画像与当前主线 | 新 session 生效 |
 
 ## 飞书凭据 `lark_config.json`
 
@@ -37,6 +39,14 @@
 | `chatBindings` | 日记群、主题群、私聊等 chat 的类型绑定 |
 
 `lark_config.json` 不保存 LLM、session policy、script timeout 或 schedule definition。会话策略在 `setting.json`。
+
+## Agent 与 Memory 文件
+
+内置 prompt 始终来自项目的 `agent/`。生产态会在 `~/.mori/agent/builtin/` 刷新一份副本，方便查看当前版本，但运行时不读取这个目录。
+
+用户只覆盖两份 prompt：`~/.mori/agent/soul.md` 和 `~/.mori/agent/response_style.md`。读取时会先去掉 HTML 注释，再判断是否为空；为空或只有注释时使用内置版本。`memory_policy.md` 固定使用内置版本，不能通过 `~/.mori/agent` 覆盖。
+
+身份画像和当前主线在 `~/.mori/memory/profile.md`、`~/.mori/memory/chapter.md`。程序更新画像或主线时会写回这两个文件；人手修改文件后，下一个新 session 会读取，同步到 SQLite，并记录一条 `manual_file_edit` 修订。已有热 session 不会中途重载。
 
 ## LLM 与模型路由 `setting.json`
 
@@ -75,9 +85,15 @@ ANTHROPIC_API_KEY=sk-ant-...
       "normal": { "provider": "main", "model": "claude-sonnet-4-20250514" },
       "strong": { "provider": "main", "model": "claude-sonnet-4-20250514" }
     },
-    "routes": {
-      "companion": "normal",
-      "weekly": { "profile": "strong", "thinkingLevel": "medium" }
+    "chat_types": {
+      "dm": "normal",
+      "topic": "strong",
+      "thread": "strong",
+      "diary": "strong",
+      "distill": "normal",
+      "daily_memory": "strong",
+      "consolidation": "strong",
+      "knowledge_index": "normal"
     }
   }
 }
@@ -86,10 +102,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 - `providers` 描述 endpoint 怎么连，以及 endpoint 下有哪些模型。`api` 直接使用 pi-ai API surface，例如 `anthropic-messages`、`openai-responses`、`openai-completions`。
 - `providers.<name>.request.cacheRetention` 会作为 harness stream option 生效。
 - `models` 是模型事实表：`name`、`input`、`reasoning`、`contextWindow`、`maxTokens`，`cost` 可选，缺省按 0 合成。
-- `model_profiles` 只允许配置 `provider` 和 `model`。
-- `routes` 只允许 profile 字符串，或 `{ "profile": "...", "thinkingLevel": "..." }`。
+- `model_profiles` 是语义档位（`normal` / `strong`），只配 `provider` 和 `model`，是"强模型到底是哪个"的唯一真源；换强模型只改这一处。
+- `chat_types` 直接按 chatType 映射到档位名：`dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`knowledge_index`。**未列出的 chatType 自动走 `normal`**。
 
-运行时只校验当前 route 会用到的 provider、profile、model 和 key，不做全量 lint。
+启动时会把 `model_profiles` 里每个档位都解析一次（provider、model、key 都要存在），chatType→档位的分派由 `chat_types` 决定。
 
 ## 时间、会话与运行默认值
 
@@ -117,7 +133,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ## Web Search
 
-`web_search` 是 companion harness 的通用只读工具，给普通聊天和认知透镜（lens）查外部事实用。配置放在 `setting.knowledge.search`：
+`web_search` 是普通对话 chatType 的通用只读工具，给普通聊天和认知透镜（lens）查外部事实用。配置放在 `setting.knowledge.search`：
 
 ```json
 {

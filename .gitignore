@@ -1,13 +1,7 @@
 node_modules/
 dist/
-data/config.json
-data/lark_config.json
-data/setting.json
-data/app.db*
-data/sessions/
-data/logs/
-data/agent.pid
-data/llm-providers.json
+!data/setting.example.json
+data/
 .env
 *.log
 diary-data/

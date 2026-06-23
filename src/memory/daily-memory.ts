@@ -147,7 +147,10 @@ async function runDreamAgent(
   episodes: Array<Record<string, any>>,
 ): Promise<string> {
   const scopeId = `daily_memory_dream_${dateKey}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "daily_memory", { runId });
+  const entry = await harnessManager.getOrCreate(scopeId, "daily_memory", {
+    runId,
+    activeToolNames: DREAM_TOOL_NAMES,
+  });
   let captured = "";
   const unsubscribe = entry.harness.subscribe(async (event) => {
     if (
@@ -160,7 +163,6 @@ async function runDreamAgent(
 
   try {
     // 不变量：dream_agent 永远不能激活 send_checkin；nudge_agent 永远不能激活写记忆工具。
-    await entry.harness.setActiveTools(DREAM_TOOL_NAMES);
     await entry.harness.prompt(`# daily_memory / dream_agent
 
 你是内部叙事整理 agent，只维护 storylines。
@@ -214,7 +216,10 @@ async function runNudgeAgent(
   context: NudgeContext,
 ): Promise<{ sent: boolean; text: string | null }> {
   const scopeId = `daily_memory_nudge_${dateKey}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "daily_memory", { runId });
+  const entry = await harnessManager.getOrCreate(scopeId, "daily_memory", {
+    runId,
+    activeToolNames: NUDGE_TOOL_NAMES,
+  });
   let sent = false;
   let text: string | null = null;
   const unsubscribe = entry.harness.subscribe(async (event) => {
@@ -229,7 +234,6 @@ async function runNudgeAgent(
   });
 
   try {
-    await entry.harness.setActiveTools(NUDGE_TOOL_NAMES);
     await entry.harness.prompt(`# daily_memory / nudge_agent
 
 你是内部轻触达判断 agent。默认不发，不发也是正确结果。

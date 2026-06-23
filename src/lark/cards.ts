@@ -201,6 +201,7 @@ export function renderToolCard(toolName: string, status: "running" | "done"): ob
     set_storyline_status: "设置 Storyline 状态",
     merge_storylines: "合并 Storyline",
     update_profile: "更新画像",
+    set_chapter: "更新当前主线",
     search_memory: "搜索记忆",
     send_checkin: "发送轻触达",
     web_search: "搜索网页",
@@ -257,15 +258,25 @@ function toolBody(tool: AgentToolBlock): string {
   const input = renderArgs(tool.name, tool.args);
   if (input) parts.push(input);
 
-  if (tool.output) {
-    const label = tool.status === "error" ? "Error" : "Output";
-    parts.push(`**${label}**\n\`\`\`\n${truncate(tool.output, 1200)}\n\`\`\``);
-  } else if (tool.status === "running") {
+  if (tool.status === "running") {
     parts.push("_运行中…_");
+  } else if (tool.output && tool.status === "error") {
+    parts.push(`**Error**\n\`\`\`\n${truncate(tool.output, 1200)}\n\`\`\``);
+  } else if (tool.output && shouldShowToolOutput(tool.name)) {
+    parts.push(`**Output**\n\`\`\`\n${truncate(stripToolDetails(tool.output), 1600)}\n\`\`\``);
   }
 
-  return parts.join("\n\n") || "_无输出_";
+  return parts.join("\n\n") || "_已完成_";
 }
+
+const TOOLS_WITH_VISIBLE_OUTPUT = new Set([
+  "search_memory",
+  "get_storyline",
+  "web_search",
+  "fetch_article",
+  "grep_vault",
+  "read_vault",
+]);
 
 function renderArgs(toolName: string, args: unknown): string {
   if (!args || typeof args !== "object") return "";
@@ -274,33 +285,111 @@ function renderArgs(toolName: string, args: unknown): string {
 
   if (toolName === "write_episode") {
     pushString(lines, "brief", record.brief);
+    pushObservations(lines, record.observations);
   } else if (
     toolName === "create_storyline" ||
     toolName === "advance_storyline" ||
     toolName === "set_storyline_status" ||
     toolName === "merge_storylines"
   ) {
+    pushString(lines, "kind", record.kind);
     pushString(lines, "title", record.title);
     pushString(lines, "id", record.id);
+    pushString(lines, "keep_id", record.keep_id);
+    pushStringArray(lines, "merge_ids", record.merge_ids);
     pushString(lines, "status", record.status);
     pushString(lines, "summary", record.summary);
+    pushString(lines, "current_tension", record.current_tension);
+    pushString(lines, "emotional_arc", record.emotional_arc);
+    pushStringArray(lines, "people", record.people);
+    pushStringArray(lines, "source_episode_ids", record.source_episode_ids);
     pushString(lines, "reason", record.reason);
+  } else if (toolName === "get_storyline") {
+    pushString(lines, "id", record.id);
   } else if (toolName === "search_memory") {
     pushString(lines, "query", record.query);
+    pushNumber(lines, "limit", record.limit);
+  } else if (toolName === "web_search") {
+    pushString(lines, "query", record.query);
+    pushNumber(lines, "limit", record.limit);
+  } else if (toolName === "fetch_article") {
+    pushString(lines, "url", record.url);
   } else if (toolName === "send_checkin") {
     pushString(lines, "text", record.text);
   } else if (toolName === "update_profile") {
     pushString(lines, "operation", record.operation);
+    pushString(lines, "old_text", record.old_text);
+    pushString(lines, "new_text", record.new_text);
     pushString(lines, "reason", record.reason);
+    pushStringArray(lines, "source_episode_ids", record.source_episode_ids);
+  } else if (toolName === "set_chapter") {
+    pushString(lines, "content", record.content, 800);
+    pushString(lines, "reason", record.reason);
+    pushStringArray(lines, "source_storyline_ids", record.source_storyline_ids);
+    pushStringArray(lines, "source_episode_ids", record.source_episode_ids);
+  } else if (toolName === "save_to_garden") {
+    pushString(lines, "title", record.title);
+    pushString(lines, "domain", record.domain);
+    pushString(lines, "brief", record.brief);
+    pushString(lines, "source_url", record.source_url);
+    pushStringArray(lines, "tags", record.tags);
+    pushString(lines, "body", record.body, 800);
+  } else if (toolName === "grep_vault") {
+    pushString(lines, "query", record.query);
+    pushString(lines, "scope", record.scope);
+  } else if (toolName === "read_vault") {
+    pushString(lines, "path", record.path);
+  } else if (toolName === "update_frontmatter") {
+    pushString(lines, "path", record.path);
+    pushString(lines, "frontmatter_json", record.frontmatter_json, 600);
+  } else if (toolName === "promote") {
+    pushString(lines, "path", record.path);
+    pushString(lines, "my_note", record.my_note);
   }
 
   if (lines.length > 0) return lines.join("\n");
   return `**Input**\n\`\`\`json\n${truncate(JSON.stringify(args, null, 2), 800)}\n\`\`\``;
 }
 
-function pushString(lines: string[], label: string, value: unknown): void {
+function pushString(lines: string[], label: string, value: unknown, max = 240): void {
   if (typeof value === "string" && value) {
-    lines.push(`**${label}** ${truncate(value, 240)}`);
+    lines.push(`**${label}** ${truncate(value, max)}`);
+  }
+}
+
+function pushNumber(lines: string[], label: string, value: unknown): void {
+  if (typeof value === "number") {
+    lines.push(`**${label}** ${value}`);
+  }
+}
+
+function pushStringArray(lines: string[], label: string, value: unknown): void {
+  if (Array.isArray(value) && value.length > 0) {
+    const items = value.filter(
+      (item): item is string => typeof item === "string" && item.length > 0,
+    );
+    if (items.length > 0) {
+      lines.push(`**${label}** ${truncate(items.join(", "), 360)}`);
+    }
+  }
+}
+
+function pushObservations(lines: string[], value: unknown): void {
+  if (!Array.isArray(value) || value.length === 0) return;
+  const observations = value
+    .map((item, index) => {
+      if (!item || typeof item !== "object") return "";
+      const record = item as Record<string, unknown>;
+      const text = typeof record.text === "string" ? record.text : "";
+      const evidence = typeof record.evidence === "string" ? record.evidence : "";
+      const tag = typeof record.tag === "string" ? record.tag : "";
+      if (!text && !evidence) return "";
+      const title = tag ? `${index + 1}. [${tag}] ${truncate(text, 280)}` : `${index + 1}. ${truncate(text, 280)}`;
+      return evidence ? `${title}\n   evidence: ${truncate(evidence, 360)}` : title;
+    })
+    .filter(Boolean);
+  if (observations.length > 0) {
+    lines.push(`**observations**\n${observations.join("\n")}`);
   }
 }
 
@@ -312,21 +401,43 @@ function summarizeArgs(toolName: string, args: unknown): string {
     return typeof value === "string" ? truncate(value.replace(/\s+/g, " "), 80) : "";
   };
 
-  if (toolName === "write_episode") return pick("brief");
   if (
     toolName === "create_storyline" ||
     toolName === "advance_storyline" ||
     toolName === "set_storyline_status" ||
     toolName === "merge_storylines"
   ) {
-    const name = pick("title") || pick("id");
+    const name = pick("title") || pick("id") || pick("keep_id");
     const status = pick("status");
     return status && name ? `${name} → ${status}` : name;
   }
   if (toolName === "search_memory") return pick("query");
-  if (toolName === "send_checkin") return pick("text");
-  if (toolName === "update_profile") return pick("reason");
+  if (toolName === "get_storyline") return pick("id");
+  if (toolName === "web_search") return pick("query");
+  if (toolName === "fetch_article") return pick("url");
+  if (toolName === "grep_vault") return pick("query");
+  if (
+    toolName === "read_vault" ||
+    toolName === "update_frontmatter" ||
+    toolName === "promote"
+  ) {
+    return pick("path");
+  }
+  if (toolName === "save_to_garden") return pick("title");
+  if (toolName === "update_profile") return pick("operation");
   return "";
+}
+
+function shouldShowToolOutput(toolName: string): boolean {
+  return TOOLS_WITH_VISIBLE_OUTPUT.has(toolName);
+}
+
+function stripToolDetails(output: string): string {
+  return output
+    .split("\n")
+    .filter((line) => !line.startsWith("details: "))
+    .join("\n")
+    .trim();
 }
 
 function toolLabel(toolName: string): string {
@@ -338,6 +449,7 @@ function toolLabel(toolName: string): string {
     set_storyline_status: "设置 Storyline 状态",
     merge_storylines: "合并 Storyline",
     update_profile: "更新画像",
+    set_chapter: "更新当前主线",
     search_memory: "搜索记忆",
     send_checkin: "发送轻触达",
     web_search: "搜索网页",

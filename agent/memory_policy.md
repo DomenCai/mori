@@ -16,9 +16,11 @@
 此刻横跨多条 storyline 的阶段、主题或反复卡点。它写连接，不复述单条 storyline。
 - **写权限**：仅周度合并可改，daily_memory、普通热会话和朋友轮都不可写
 - 默认延续原内容，只有主线真的转章、变清楚或旧描述已不准时才整体重写
+- 只用于把握总体阶段；回应具体项目、关系或状态时，仍以对应 active storyline 为准
+- 核对事实时必须回到 storylines、fresh episodes 或 `search_memory` 检索 episode / 原文
 - 只描述处境与主题，不下心理状态、人格、关系或健康结论
 
-### ③ Storylines（active 注入，recent dormant 少量注入）
+### ③ Storylines（active 全量注入，recent dormant 少量注入）
 
 "我生活里正在展开什么"——项目、关系、情绪弧线、持续兴趣、自我认知变化、未闭环的事。
 - **写权限**：仅 `daily_memory` 的 dream_agent 自动维护；普通热会话不直接写

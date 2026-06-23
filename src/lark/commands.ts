@@ -157,6 +157,7 @@ async function handleProfile(
 ): Promise<CommandResult> {
   const rest = msg.content.trim().slice("/profile".length).trim();
   const memory = ctx.harnessManager.getMemoryService();
+  memory.syncEditableMemoryFiles();
 
   if (!rest) {
     const profile = memory.getProfile();

@@ -27,10 +27,6 @@ import { nowISO } from "../utils.js";
 const larkLog = logger("lark");
 const diaryLog = logger("diary");
 
-const DIARY_REPLY_TOOL_NAMES = [
-  "search_memory",
-];
-
 interface StreamAgentReplyOutcome {
   promptError?: string | null;
   successStatus?: string;
@@ -147,8 +143,12 @@ export async function handleDiaryMessage(
   }
   harnessManager.recordActivity(scopeId, messageTime);
 
+  // 日记 scope 工具集恒定 [write_episode, search_memory]，不切工具（切了会炸缓存）。
+  // 追问轮硬拦 write_episode；新日记轮放行（蒸馏需要它）。
   if (mode === "reply") {
-    await entry.harness.setActiveTools(DIARY_REPLY_TOOL_NAMES);
+    entry.toolGuard.block(["write_episode"], "日记追问轮不写 episode");
+  } else {
+    entry.toolGuard.reset();
   }
 
   diaryLog.info(
@@ -270,10 +270,16 @@ export async function handleLensMessage(
   harnessManager.recordActivity(scopeId, message.occurredAt);
   larkLog.info(`处理 lens scope=${scopeId} type=${chatType} lens=${lens.lens}`);
 
-  const restoreToolNames = entry.harness.getActiveTools().map((tool) => tool.name);
+  // 透镜轮只放行 lens 允许的工具，但不切工具集（切了会炸活跃会话的缓存），
+  // 改成把其余工具拦在调用层。
+  const allowed = new Set(lensToolNames(lens));
+  const blocked = entry.harness
+    .getActiveTools()
+    .map((tool) => tool.name)
+    .filter((name) => !allowed.has(name));
 
   try {
-    await entry.harness.setActiveTools(lensToolNames(lens));
+    entry.toolGuard.block(blocked, "思考透镜轮只用该透镜允许的工具");
     const sent = await streamAgentReply(
       channel,
       msg,
@@ -295,7 +301,7 @@ export async function handleLensMessage(
       rootId: message.rootId,
     });
   } finally {
-    await entry.harness.setActiveTools(restoreToolNames);
+    entry.toolGuard.reset();
   }
 }
 
@@ -359,18 +365,22 @@ async function formatDiaryPrompt(
 ): Promise<string> {
   const replyContext = buildReplyContext(message, harnessManager);
 
-  return `${replyContext}[日记群追问]
-这是用户在同一篇日记上下文里继续回复 Agent 的消息。保持日记群的陪伴语气和上下文连续性，但不要为了形式调用 write_episode，也不要把它当成新的日记入库。
+  return `${replyContext}<diary_followup>
+这是同一篇日记里的继续回复，不是新日记：本轮不要调用 write_episode，也不要把它当成新日记入库。保持日记群的陪伴语气和上下文连续性。
+</diary_followup>
 
-用户回复：
-${message.content}`;
+<my_message>
+${message.content}
+</my_message>`;
 }
 
 async function formatChatPrompt(
   message: IngestedMessage,
   harnessManager: HarnessManager,
 ): Promise<string> {
-  return `${buildReplyContext(message, harnessManager)}${message.content}`;
+  return `${buildReplyContext(message, harnessManager)}<my_message>
+${message.content}
+</my_message>`;
 }
 
 export function buildReplyContext(
@@ -381,14 +391,13 @@ export function buildReplyContext(
   if (!contextMessageId) return "";
   const parent = harnessManager.getMessageService().get(contextMessageId);
   if (!parent) return "";
-  const relation = message.replyTo ? "reply_to" : "root";
   const knowledge = parent.knowledge_path
-    ? `\n[这是对知识卡片的回应，对应知识文件：${parent.knowledge_path}]`
+    ? `这是对知识卡片的回应，对应知识文件：${parent.knowledge_path}\n`
     : "";
-  return `[${relation} 原文]${knowledge}
-${parent.content}
+  return `<replied_message>
+${knowledge}${parent.content}
+</replied_message>
 
---- 当前用户消息 ---
 `;
 }
 

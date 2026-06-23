@@ -2,15 +2,36 @@ import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import { agentDir, knowledgeIndexPath } from "../config.js";
+import { agentDir, builtinAgentDir, knowledgeIndexPath } from "../config.js";
+import type { MemoryService } from "../memory/service.js";
 
-function readPromptFile(name: string): string {
-  return readFileSync(join(agentDir, name), "utf-8");
+function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, "").trim();
 }
 
-const soul = readPromptFile("soul.md");
-const memoryPolicy = readPromptFile("memory_policy.md");
-const responseStyle = readPromptFile("response_style.md");
+function readBuiltinPrompt(name: string): string {
+  return readFileSync(join(builtinAgentDir, name), "utf-8").trim();
+}
+
+function readOverridablePrompt(name: "soul.md" | "response_style.md"): string {
+  const override = stripHtmlComments(readFileSync(join(agentDir, name), "utf-8"));
+  return override || readBuiltinPrompt(name);
+}
+
+function readPromptSet(): {
+  soul: string;
+  memoryPolicy: string;
+  responseStyle: string;
+} {
+  return {
+    soul: readOverridablePrompt("soul.md"),
+    memoryPolicy: readBuiltinPrompt("memory_policy.md"),
+    responseStyle: readOverridablePrompt("response_style.md"),
+  };
+}
+
+const DORMANT_STORYLINE_LIMIT = 5;
+const DORMANT_STORYLINE_LIMIT_WITH_CHAPTER = 2;
 
 export interface MemorySnapshot {
   profile: string;
@@ -47,14 +68,11 @@ export interface MemorySnapshot {
   knowledgeIndex: string;
 }
 
-export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
-  const profile = db
-    .prepare("SELECT content FROM profile WHERE id = 1")
-    .get() as { content: string } | undefined;
-
-  const chapter = db
-    .prepare("SELECT content FROM chapter WHERE id = 1")
-    .get() as { content: string } | undefined;
+export function buildMemorySnapshot(
+  db: Database.Database,
+  memoryService: MemoryService,
+): MemorySnapshot {
+  const chapterText = memoryService.getChapter();
 
   const activeStorylines = db
     .prepare(
@@ -73,9 +91,13 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
        FROM storylines
        WHERE status = 'dormant'
        ORDER BY last_active_at DESC
-       LIMIT 5`,
+       LIMIT ?`,
     )
-    .all() as Array<Record<string, any>>;
+    .all(
+      chapterText.trim()
+        ? DORMANT_STORYLINE_LIMIT_WITH_CHAPTER
+        : DORMANT_STORYLINE_LIMIT,
+    ) as Array<Record<string, any>>;
 
   const episodes = db
     .prepare(
@@ -88,8 +110,8 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
     .all();
 
   return {
-    profile: profile?.content ?? "",
-    chapter: chapter?.content ?? "",
+    profile: memoryService.getProfile(),
+    chapter: chapterText,
     activeStorylines: activeStorylines.map((r) => ({
       id: r.id,
       kind: r.kind,
@@ -127,14 +149,16 @@ export function buildMemorySnapshot(db: Database.Database): MemorySnapshot {
 
 export function buildSystemPrompt(snapshot: MemorySnapshot): string {
   const sections: string[] = [];
+  const hasChapter = snapshot.chapter.trim().length > 0;
+  const promptSet = readPromptSet();
 
-  sections.push(soul);
-  sections.push(memoryPolicy);
-  sections.push(responseStyle);
+  sections.push(promptSet.soul);
+  sections.push(promptSet.memoryPolicy);
+  sections.push(promptSet.responseStyle);
 
   sections.push("---\n# 身份画像\n" + snapshot.profile);
 
-  if (snapshot.chapter.trim()) {
+  if (hasChapter) {
     sections.push("---\n# 当前主线\n" + snapshot.chapter.trim());
   }
 
@@ -158,8 +182,10 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
       .map((item) => {
         const lines = [`## ${item.id} | ${item.title}（${item.kind}, dormant）`];
         lines.push(`摘要：${item.summary}`);
-        if (item.current_tension) lines.push(`当前张力：${item.current_tension}`);
-        if (item.emotional_arc) lines.push(`情绪/态度弧线：${item.emotional_arc}`);
+        if (!hasChapter) {
+          if (item.current_tension) lines.push(`当前张力：${item.current_tension}`);
+          if (item.emotional_arc) lines.push(`情绪/态度弧线：${item.emotional_arc}`);
+        }
         lines.push(`last_active_at：${item.last_active_at}`);
         return lines.join("\n");
       })

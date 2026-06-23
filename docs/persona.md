@@ -1,6 +1,6 @@
 # Agent 人格与声音
 
-这份文档记录 agent 的声音定调和为什么是这样。提示词文本在 `agent/` 下，重启后生效（seed 规则见[配置参考](configuration.md)）。
+这份文档记录 agent 的声音定调和为什么是这样。内置提示词文本在仓库 `agent/` 下；生产态可用 `~/.mori/agent/soul.md` 和 `~/.mori/agent/response_style.md` 覆盖，新 session 生效（seed 规则见[配置参考](configuration.md)）。
 
 ## 三个文件分工
 
@@ -10,7 +10,7 @@ system prompt 由 `src/agent/prompts.ts` 把三块按顺序拼起来，后面再
 |---|---|
 | `soul.md` | 你是谁 + 你怎么说话（身份、声音、边界、嘴上禁令） |
 | `response_style.md` | 此刻怎么回（陪伴 / 拆线 / 反驳 / 沉淀 四模式 + 通用原则） |
-| `memory_policy.md` | 记忆架构 + 工具写入纪律，跟人格无关，刻意不掺语气 |
+| `memory_policy.md` | 记忆架构 + 工具写入纪律，跟人格无关，刻意不掺语气；固定使用内置版本 |
 
 ## Cognitive Lenses 的位置
 

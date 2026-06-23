@@ -3,7 +3,6 @@ import {
   JsonlSessionRepo,
   type AgentTool,
   type AgentHarnessStreamOptions,
-  type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Model } from "@earendil-works/pi-ai";
@@ -14,6 +13,7 @@ import { MemoryService } from "../memory/service.js";
 import { MessageService } from "../storage/messages.js";
 import { VaultService } from "../knowledge/vault.js";
 import { buildMemorySnapshot, buildSystemPrompt } from "./prompts.js";
+import { installToolGuard, type ToolGuard } from "./toolGuard.js";
 import { createWriteEpisodeTool } from "./tools/write-episode.js";
 import {
   createAdvanceStorylineTool,
@@ -29,47 +29,49 @@ import { createSendCheckinTool } from "./tools/send-checkin.js";
 import { createKnowledgeTools } from "./tools/knowledge.js";
 import { isWebSearchConfigured } from "./tools/web-search.js";
 import { genId, businessDateKey, businessFileTimestamp } from "../utils.js";
-import type { SessionPolicyConfig } from "../config.js";
+import type { AgentChatType, SessionPolicyConfig } from "../config.js";
+import { DEFAULT_PROFILE } from "../config.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
+import type { StoredMessage } from "../storage/messages.js";
 import type { Clock } from "../clock.js";
 import { systemClock } from "../clock.js";
+import { logger } from "../log.js";
+
+const distillLog = logger("distill");
+
+// 一段会话窗口的用户输入总字数低于此值，视为寒暄/确认类废会话，关会话时不单独蒸馏。
+const MIN_DISTILL_USER_CHARS = 80;
 
 export interface HarnessEntry {
   harness: AgentHarness;
   scopeId: string;
-  chatType:
-    | "diary"
-    | "dm"
-    | "topic"
-    | "thread"
-    | "consolidation"
-    | "knowledge_index"
-    | "daily_memory";
-  routeName: "companion" | "weekly";
+  chatType: AgentChatType;
+  /** 实际选中的档位名（normal / strong），调试用。 */
+  profileName: string;
   modelId: string;
   runId?: string;
   lastActivityAt: number;
   activeToolNames: string[];
+  toolGuard: ToolGuard;
   segmentStartedAt: string | null;
   segmentEndedAt: string | null;
   currentEpisodeSource: EpisodeSource | null;
 }
 
-export interface HarnessModelRoute {
-  name: "companion" | "weekly";
+export interface HarnessModelProfile {
+  name: string;
   model: Model<any>;
   apiKey: string;
   streamOptions: AgentHarnessStreamOptions;
-  thinkingLevel?: ThinkingLevel;
 }
 
 export interface HarnessManagerOptions {
   db: Database.Database;
   sessionsDir: string;
-  routes: {
-    companion: HarnessModelRoute;
-    weekly: HarnessModelRoute;
-  };
+  /** 已解析的档位：档位名 → 模型配置。 */
+  profiles: Record<string, HarnessModelProfile>;
+  /** chatType → 档位名；未列出的 chatType 走 DEFAULT_PROFILE。 */
+  chatTypes: Partial<Record<AgentChatType, string>>;
   channel?: LarkChannel;
   registry?: ChatRegistry;
   clock?: Clock;
@@ -84,14 +86,16 @@ export class HarnessManager {
   private messageService: MessageService;
   private vaultService: VaultService;
   private db: Database.Database;
-  private routes: HarnessManagerOptions["routes"];
+  private profiles: HarnessManagerOptions["profiles"];
+  private chatTypes: HarnessManagerOptions["chatTypes"];
   private channel?: LarkChannel;
   private registry?: ChatRegistry;
   private clock: Clock;
 
   constructor(opts: HarnessManagerOptions) {
     this.db = opts.db;
-    this.routes = opts.routes;
+    this.profiles = opts.profiles;
+    this.chatTypes = opts.chatTypes;
     this.clock = opts.clock ?? systemClock;
     this.env = new NodeExecutionEnv({ cwd: process.cwd() });
     this.repo = new JsonlSessionRepo({
@@ -130,7 +134,7 @@ export class HarnessManager {
   async getOrCreate(
     scopeId: string,
     chatType: HarnessEntry["chatType"],
-    opts: { runId?: string } = {},
+    opts: { runId?: string; activeToolNames?: string[] } = {},
   ): Promise<HarnessEntry> {
     const existing = this.entries.get(scopeId);
     if (existing) {
@@ -188,6 +192,10 @@ export class HarnessManager {
       startedAt: entry.segmentStartedAt,
       endedAt: entry.segmentEndedAt,
     };
+    // 不论后续蒸馏是否落库，这段窗口都算翻篇，避免下次关会话重复处理同一段。
+    entry.segmentStartedAt = null;
+    entry.segmentEndedAt = null;
+
     if (this.diaryService.hasEpisodeForScopeWindow(source)) return;
 
     const messages = this.messageService.getConversationMessages(
@@ -195,35 +203,44 @@ export class HarnessManager {
       source.startedAt,
       source.endedAt,
     );
-    if (!messages.some((message) => message.role === "user")) return;
+    if (!segmentWorthDistilling(messages)) return;
 
-    const restoreToolNames = [...entry.activeToolNames];
-    entry.currentEpisodeSource = source;
+    await this.runEpisodeDistill(source, messages);
+  }
+
+  // 关会话蒸馏跑在一个独立的一次性 agent 里（工具集恒定为 [write_episode]），而不是
+  // 劫持正在对话的 harness。对话 agent 因此不必内联写 episode、不必切工具，也不会自己
+  // 引导自己；蒸馏只读用户消息和我的回复文本，不掺工具调用噪音。
+  private async runEpisodeDistill(
+    source: EpisodeSource,
+    messages: StoredMessage[],
+  ): Promise<void> {
     const transcript = messages
-      .map((message) => `[${message.occurred_at}] ${message.role}: ${message.content}`)
+      .map(
+        (m) =>
+          `[${m.occurred_at}] ${m.role === "user" ? "用户" : "我"}: ${m.content}`,
+      )
       .join("\n\n");
 
+    const runId = genId("run");
+    const distillScope = `distill_${runId}`;
+    const entry = await this.getOrCreate(distillScope, "distill", { runId });
+    entry.currentEpisodeSource = source;
     try {
-      await entry.harness.setActiveTools(["write_episode"]);
       await entry.harness.prompt(`# 会话片段蒸馏
 
-请只调用 write_episode，把下面这段已经结束的对话蒸馏成一条 episode。
-只记录和用户长期上下文有关的事实、判断、行动和偏好信号；不要修改身份画像，不要输出面向用户的回复文本。
+下面是一段已经结束的对话，只含用户消息和我的回复。请判断其中是否有和用户长期上下文有关的事实、判断、行动、偏好信号：
+- 有，就只调用 write_episode 蒸馏成一条 episode（每条 observation 带原文 evidence）。
+- 没有值得长期记的内容，就什么工具都不要调用，直接结束。
+不要输出面向用户的回复文本，不要修改身份画像。
 
 ${transcript}`);
-    } catch {
-      // 统一在 finally 里检查是否实际落库，避免工具已成功但 prompt 后续失败时写双份。
+    } catch (err) {
+      // 蒸馏失败不落兜底 episode：原始消息已在 messages 表里留底，宁可这次漏记，
+      // 也不要把整段 transcript 当 episode 塞进证据层污染检索。
+      distillLog.warn(`scope=${source.conversationId} 蒸馏失败`, err);
     } finally {
-      try {
-        if (!this.diaryService.hasEpisodeForScopeWindow(source)) {
-          this.diaryService.saveFallbackEpisode(source, transcript);
-        }
-      } finally {
-        await entry.harness.setActiveTools(restoreToolNames);
-        entry.currentEpisodeSource = null;
-        entry.segmentStartedAt = null;
-        entry.segmentEndedAt = null;
-      }
+      await this.resetSession(distillScope);
     }
   }
 
@@ -254,7 +271,6 @@ ${transcript}`);
     });
 
     try {
-      await entry.harness.setActiveTools(["read_vault"]);
       await entry.harness.prompt(`# 知识地图 builtin
 
 你的目标是维持一张压缩、可导航的知识地图，如实反映知识库已有内容，让未来的我和 Agent 知道我沉淀了什么、该往哪里挖。
@@ -283,23 +299,22 @@ ${JSON.stringify(files, null, 2)}
   private async createEntry(
     scopeId: string,
     chatType: HarnessEntry["chatType"],
-    opts: { runId?: string },
+    opts: { runId?: string; activeToolNames?: string[] },
   ): Promise<HarnessEntry> {
     const session = await this.repo.create({
       cwd: `${chatType}/${businessDateKey().slice(0, 7)}`,
     });
 
-    const route =
-      chatType === "consolidation" ||
-      chatType === "knowledge_index" ||
-      chatType === "daily_memory"
-        ? this.routes.weekly
-        : this.routes.companion;
+    const profileName = this.chatTypes[chatType] ?? DEFAULT_PROFILE;
+    const profile = this.profiles[profileName];
+    if (!profile) {
+      throw new Error(`未找到模型档位: ${profileName}（chatType=${chatType}）`);
+    }
 
-    const isDiaryRound = chatType === "diary";
     const isConsolidation = chatType === "consolidation";
     const canEditProfile = isConsolidation;
-    const snapshot = buildMemorySnapshot(this.db);
+    this.memoryService.syncEditableMemoryFiles();
+    const snapshot = buildMemorySnapshot(this.db, this.memoryService);
     const systemPrompt = appendSessionInstructions(
       buildSystemPrompt(snapshot),
       chatType,
@@ -333,37 +348,29 @@ ${JSON.stringify(files, null, 2)}
       allTools.push(createSetChapterTool(this.memoryService, () => entry.runId));
     }
 
-    const activeToolNames = activeToolNamesFor(chatType);
+    const activeToolNames = opts.activeToolNames ?? activeToolNamesFor(chatType);
 
     const harness = new AgentHarness({
       env: this.env,
       session,
-      model: route.model,
+      model: profile.model,
       tools: allTools,
       activeToolNames,
       systemPrompt,
-      getApiKeyAndHeaders: async () => ({ apiKey: route.apiKey }),
-      streamOptions: route.streamOptions,
-      thinkingLevel: route.thinkingLevel,
+      getApiKeyAndHeaders: async () => ({ apiKey: profile.apiKey }),
+      streamOptions: profile.streamOptions,
     });
-
-    if (isDiaryRound) {
-      harness.on("tool_call", (event) => {
-        if (event.toolName === "update_profile") {
-          return { block: true, reason: "日记轮不可修改身份画像" };
-        }
-      });
-    }
 
     entry = {
       harness,
       scopeId,
       chatType,
-      routeName: route.name,
-      modelId: route.model.id,
+      profileName: profile.name,
+      modelId: profile.model.id,
       runId: opts.runId,
       lastActivityAt: Date.now(),
       activeToolNames,
+      toolGuard: installToolGuard(harness),
       segmentStartedAt: null,
       segmentEndedAt: null,
       currentEpisodeSource: null,
@@ -414,7 +421,8 @@ function appendSessionInstructions(
   if (
     chatType === "consolidation" ||
     chatType === "knowledge_index" ||
-    chatType === "daily_memory"
+    chatType === "daily_memory" ||
+    chatType === "distill"
   ) {
     return basePrompt;
   }
@@ -454,6 +462,9 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
   if (chatType === "diary") {
     return ["write_episode", "search_memory"];
   }
+  if (chatType === "distill") {
+    return ["write_episode"];
+  }
   if (chatType === "consolidation") {
     return ["update_profile", "set_chapter", "search_memory"];
   }
@@ -463,6 +474,7 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
   if (chatType === "daily_memory") {
     return [];
   }
+  // 普通对话不写 episode（蒸馏交给独立 distill agent），所以工具集里不含 write_episode。
   const tools = [
     "search_memory",
     "fetch_article",
@@ -489,4 +501,14 @@ function policyKeyForChatType(
 
 function shouldDistillOnClose(chatType: HarnessEntry["chatType"]): boolean {
   return chatType === "dm" || chatType === "topic" || chatType === "thread";
+}
+
+// 闸门：只有用户实质说了够多内容的窗口才值得开一次独立蒸馏。寒暄/确认类
+// （"在吗""嗯""谢了"）字数不够，直接跳过，省下一次 LLM 调用。
+// 用字数总和而非消息条数：既能挡住"多条短句"，也不会误杀"一条长倾诉"。
+function segmentWorthDistilling(messages: StoredMessage[]): boolean {
+  const userChars = messages
+    .filter((m) => m.role === "user")
+    .reduce((sum, m) => sum + m.content.trim().length, 0);
+  return userChars >= MIN_DISTILL_USER_CHARS;
 }

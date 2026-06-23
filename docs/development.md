@@ -14,9 +14,10 @@
 | | 开发态（`pnpm dev`） | 生产态（CLI） |
 |---|---|---|
 | ROOT | 项目内 `./data` | `~/.mori` |
-| 用户可改文件 | 直接用仓库原位文件 | 首次缺失时从仓库 seed 一份 |
+| prompt 文件 | 直接用仓库 `agent/` 内置文件 | `~/.mori/agent/` override + `builtin/` 参考 |
+| memory 文件 | 项目内 `data/memory/` | `~/.mori/memory/` |
 
-开发态直接读写仓库里的 `data/`、`agent/`，改了立刻生效，不会污染 `~/.mori`。
+开发态直接读仓库里的 `agent/` 作为内置 prompt，运行状态和可编辑 memory 写在项目内 `data/`，不会污染 `~/.mori`。
 
 ## 首次启动
 
@@ -31,16 +32,17 @@ pnpm dev
 
 两处配合：
 
-- `data/setting.json` —— 声明 provider、模型、路由和运行默认值。`apiKeyEnv` 指向环境变量名。
+- `data/setting.json` —— 声明 provider、模型、chatType 档位和运行默认值。`apiKeyEnv` 指向环境变量名。
 - `.env` —— 填上面 `apiKeyEnv` 对应的 key（如 `ANTHROPIC_API_KEY=sk-ant-...`）。
 
-路由 `companion`（日常对话）和 `weekly`（周度合并）各自映射到一个 `model_profile`。换模型只改 `setting.json`，不动代码。
+`chat_types` 直接把 `dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`knowledge_index` 映射到一个 `model_profile`。换模型只改 `setting.json`，不动代码。
 
 ## 日常开发
 
 - `pnpm dev` —— 前台运行 + 文件改动热重载，日志打到终端并按天落到 `data/logs/YYYY-MM-DD.log`。
 - `pnpm build` —— `tsc` 编译到 `dist/`（CLI 安装时由 `prepare` 自动触发，平时不用手跑）。
-- 改 agent 提示词 —— 直接编辑 `agent/` 下的 `soul.md` / `response_style.md` / `memory_policy.md`，开发态即时生效。
+- 改内置 prompt —— 直接编辑 `agent/` 下的 `soul.md` / `response_style.md` / `memory_policy.md`，新 session 生效。
+- 改画像或当前主线 —— 编辑 `data/memory/profile.md` / `data/memory/chapter.md`，新 session 生效。
 
 ## 日志
 

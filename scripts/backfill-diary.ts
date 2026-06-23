@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getDb, initDb, closeDb } from "../src/storage/db.js";
-import { loadLlmConfig, resolveModelRoute, sessionsDir } from "../src/config.js";
-import { HarnessManager } from "../src/agent/harness.js";
+import { loadLlmConfig, resolveProfile, sessionsDir } from "../src/config.js";
+import { HarnessManager, type HarnessModelProfile } from "../src/agent/harness.js";
 import { FixedMutableClock } from "../src/clock.js";
 import type { IngestedMessage } from "../src/ingest/message.js";
 import { distillDiaryEntry } from "../src/diary/distill.js";
@@ -481,14 +481,16 @@ async function main(): Promise<void> {
     }
 
     const llmConfig = loadLlmConfig();
+    const profiles: Record<string, HarnessModelProfile> = {};
+    for (const name of Object.keys(llmConfig.model_profiles)) {
+      profiles[name] = { name, ...resolveProfile(name, llmConfig) };
+    }
     const harnessManager = new HarnessManager({
       db,
       sessionsDir,
       clock,
-      routes: {
-        companion: { name: "companion", ...resolveModelRoute("companion", llmConfig) },
-        weekly: { name: "weekly", ...resolveModelRoute("weekly", llmConfig) },
-      },
+      profiles,
+      chatTypes: llmConfig.chat_types,
     });
 
     if (parsed.weekStart) {

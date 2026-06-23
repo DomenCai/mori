@@ -128,6 +128,20 @@ function fillMissingPath(target, source, path) {
   return true;
 }
 
+function migrateSetting(current, example) {
+  const migrated = [];
+  if (
+    isPlainObject(current.llm) &&
+    isPlainObject(current.llm.routes) &&
+    !("chat_types" in current.llm) &&
+    isPlainObject(example.llm?.chat_types)
+  ) {
+    current.llm.chat_types = JSON.parse(JSON.stringify(example.llm.chat_types));
+    migrated.push("llm.chat_types");
+  }
+  return migrated;
+}
+
 function syncSettingFields() {
   const settingPath = join(homedir(), ".mori", "setting.json");
   if (!existsSync(settingPath)) {
@@ -138,17 +152,23 @@ function syncSettingFields() {
   const example = readJson(join(scriptDir, "data", "setting.example.json"));
   const current = readJson(settingPath);
   const added = [];
+  const migrated = migrateSetting(current, example);
 
   for (const path of AUTO_SYNC_SETTING_PATHS) {
     if (fillMissingPath(current, example, path)) added.push(path);
   }
 
-  if (added.length === 0) {
+  if (migrated.length === 0 && added.length === 0) {
     log("setting.json 无需补全字段。");
     return;
   }
 
   writeFileSync(settingPath, JSON.stringify(current, null, 2) + "\n", { mode: 0o600 });
+  if (migrated.length > 0) {
+    log("已迁移 setting.json 字段：");
+    for (const path of migrated) log(`  ~ ${path}`);
+  }
+  if (added.length === 0) return;
   log(`已为 setting.json 补全 ${added.length} 个字段：`);
   for (const path of added) log(`  + ${path}`);
 }

@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
-import type { AgentHarnessStreamOptions, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentHarnessStreamOptions } from "@earendil-works/pi-agent-core";
 import type { CacheRetention, Model } from "@earendil-works/pi-ai";
 import { logger } from "./log.js";
 import { setBusinessTimeZone } from "./utils.js";
@@ -47,15 +47,25 @@ interface ModelProfile {
   model: string;
 }
 
-export type LlmRouteConfig = string | {
-  profile: string;
-  thinkingLevel?: ThinkingLevel;
-};
+export type AgentChatType =
+  | "diary"
+  | "dm"
+  | "topic"
+  | "thread"
+  | "distill"
+  | "consolidation"
+  | "knowledge_index"
+  | "daily_memory";
+
+/** 没有为某个 chatType 配置档位时使用的默认档位。 */
+export const DEFAULT_PROFILE = "normal";
 
 export interface LlmConfig {
   providers: Record<string, LlmProviderConfig>;
+  /** 语义档位：normal / strong，是"强模型到底是哪个"的唯一真源。 */
   model_profiles: Record<string, ModelProfile>;
-  routes: Record<string, LlmRouteConfig>;
+  /** chatType → 档位名；未列出的 chatType 走 DEFAULT_PROFILE。 */
+  chat_types: Partial<Record<AgentChatType, string>>;
 }
 
 export interface SessionPolicyItem {
@@ -133,23 +143,17 @@ export function loadLlmConfig(): LlmConfig {
   return _config;
 }
 
-export function resolveModelRoute(
-  routeName: string,
+export function resolveProfile(
+  profileName: string,
   config?: LlmConfig,
 ): {
   model: Model<any>;
   apiKey: string;
   streamOptions: AgentHarnessStreamOptions;
-  thinkingLevel?: ThinkingLevel;
 } {
   const cfg = config ?? loadLlmConfig();
-  const route = cfg.routes[routeName];
-  if (!route) throw new Error(`未找到路由: ${routeName}`);
-  const profileName = typeof route === "string" ? route : route.profile;
-  const thinkingLevel = typeof route === "string" ? undefined : route.thinkingLevel;
-
   const profile = cfg.model_profiles[profileName];
-  if (!profile) throw new Error(`未找到模型配置: ${profileName}`);
+  if (!profile) throw new Error(`未找到模型档位: ${profileName}`);
 
   const provider = cfg.providers[profile.provider];
   if (!provider) throw new Error(`未找到 provider: ${profile.provider}`);
@@ -187,7 +191,6 @@ export function resolveModelRoute(
     streamOptions: provider.request?.cacheRetention
       ? { cacheRetention: provider.request.cacheRetention }
       : {},
-    thinkingLevel,
   };
 }
 
@@ -234,11 +237,13 @@ const LARK_CONFIG_FILE = join(ROOT, "lark_config.json");
 export const rootDir = ROOT;
 export const repoDir = REPO_ROOT;
 export const isDevMode = isDev;
+export const builtinAgentDir = join(REPO_ROOT, "agent");
 export const sessionsDir = join(ROOT, "sessions");
 export const dbPath = join(ROOT, "app.db");
 export const logsDir = join(ROOT, "logs");
 export const pidPath = join(ROOT, "agent.pid");
 export const vaultDir = join(ROOT, "vault");
+export const memoryDir = join(ROOT, "memory");
 export const scriptDir = join(ROOT, "script");
 export const schedulesPath = join(ROOT, "schedules.json");
 export const knowledgeIndexPath = join(vaultDir, ".index.md");
@@ -254,14 +259,38 @@ function userFile(name: string, devPath: string, seedFrom = devPath): string {
   return target;
 }
 
-/** 用户可改的整个目录（agent 提示词），仅补齐必需的缺失 seed 文件。 */
-function userDir(
-  name: string,
-  devPath: string,
-  requiredFiles: readonly string[],
-): string {
-  if (isDev) return devPath;
-  const target = join(ROOT, name);
+const USER_PROMPT_FILES = ["soul.md", "response_style.md"] as const;
+const BUILTIN_PROMPT_FILES = ["soul.md", "memory_policy.md", "response_style.md"] as const;
+
+const USER_PROMPT_TEMPLATE = `<!--
+这里可以写你的个人 override。
+
+保持本文件为空，或只保留 HTML 注释时，mori 会使用内置版本。
+改完后，新 session 生效；已存在的热 session 不会中途重载。
+-->
+`;
+
+const AGENT_README = `# mori agent
+
+这个目录用于放用户可编辑的 agent override。
+
+- soul.md：可选，覆盖内置人格内核。
+- response_style.md：可选，覆盖内置回应风格。
+- builtin/：当前版本内置提示词的只读参考，启动时会被刷新，运行时不会读取。
+- memory_policy.md 固定使用内置版本，不能通过这里覆盖。
+
+规则：
+
+- mori 会先去掉 HTML 注释，再判断文件是否为空。
+- 文件为空或只有注释时，使用内置版本。
+- 用户 override 只影响新 session，已有热 session 不会中途重载。
+- 当前身份画像和当前主线在 ../memory/profile.md 与 ../memory/chapter.md。
+`;
+
+/** 生产态 agent 目录：只 seed 用户 override 和说明；builtin 仅展示，运行时不读。 */
+function userAgentDir(): string {
+  if (isDev) return builtinAgentDir;
+  const target = join(ROOT, "agent");
   if (!existsSync(target)) {
     mkdirSync(target, { recursive: true, mode: 0o700 });
     log.info(`已生成 ${target}，可按需修改`);
@@ -271,13 +300,25 @@ function userDir(
     throw new Error(`${target} 已存在但不是目录`);
   }
 
-  for (const file of requiredFiles) {
+  for (const file of USER_PROMPT_FILES) {
     const targetFile = join(target, file);
     if (!existsSync(targetFile)) {
       mkdirSync(dirname(targetFile), { recursive: true, mode: 0o700 });
-      copyFileSync(join(devPath, file), targetFile);
+      writeFileSync(targetFile, USER_PROMPT_TEMPLATE, { mode: 0o600 });
       log.info(`已补齐 ${targetFile}，可按需修改`);
     }
+  }
+
+  const readmeFile = join(target, "README.md");
+  if (!existsSync(readmeFile)) {
+    writeFileSync(readmeFile, AGENT_README, { mode: 0o600 });
+    log.info(`已生成 ${readmeFile}`);
+  }
+
+  const builtinViewDir = join(target, "builtin");
+  mkdirSync(builtinViewDir, { recursive: true, mode: 0o700 });
+  for (const file of BUILTIN_PROMPT_FILES) {
+    copyFileSync(join(builtinAgentDir, file), join(builtinViewDir, file));
   }
 
   return target;
@@ -288,11 +329,7 @@ export const settingPath = userFile(
   join(REPO_ROOT, "data", "setting.json"),
   join(REPO_ROOT, "data", "setting.example.json"),
 );
-export const agentDir = userDir("agent", join(REPO_ROOT, "agent"), [
-  "soul.md",
-  "memory_policy.md",
-  "response_style.md",
-]);
+export const agentDir = userAgentDir();
 
 // .env 必须先于任何环境变量读取；生产首次从 .env.example seed（占位 key 需用户填）。
 loadEnv({ path: userFile(".env", join(REPO_ROOT, ".env"), join(REPO_ROOT, ".env.example")) });

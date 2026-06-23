@@ -1,11 +1,24 @@
-import { registerApp } from "@larksuite/channel";
+import { registerApp, type RegisterAppOptions } from "@larksuite/channel";
 import qrcode from "qrcode-terminal";
 import type { LarkConfig } from "../config.js";
+import { LARK_SCOPES } from "./scopes.js";
 
 const DOMAIN_BY_TENANT: Record<"feishu" | "lark", string> = {
   feishu: "https://open.feishu.cn",
   lark: "https://open.larksuite.com",
 };
+
+const MORI_APP_ADDONS = {
+  scopes: LARK_SCOPES,
+  events: {
+    items: {
+      tenant: ["im.message.receive_v1"],
+    },
+  },
+  callbacks: {
+    items: ["card.action.trigger"],
+  },
+} satisfies NonNullable<RegisterAppOptions["addons"]>;
 
 /**
  * 首次运行：终端渲染二维码，用户用飞书 App 扫码创建/授权应用，
@@ -17,6 +30,7 @@ export async function runRegistrationWizard(): Promise<LarkConfig> {
   const result = await registerApp({
     source: "mori",
     appPreset: { name: "mori" },
+    addons: MORI_APP_ADDONS,
     onQRCodeReady: (info) => {
       console.log("请用飞书 App 扫描以下二维码完成应用创建/授权：\n");
       qrcode.generate(info.url, { small: true });

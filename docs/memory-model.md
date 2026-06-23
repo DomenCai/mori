@@ -6,9 +6,9 @@
 
 | 层 | 存什么 | 注入时机 | 存储 |
 |---|---|---|---|
-| ① 身份画像 | 稳定的"我"：价值观、好奇心方向、判断习惯、表达风格、稳定关系 | 始终注入 | `profile` |
-| ② 当前主线 | 横跨多条 storyline 的当前阶段、主题或反复卡点 | 非空时始终注入 | `chapter` / `chapter_revisions` |
-| ③ Storylines | 用户生活里正在展开的叙事线：项目、关系、情绪弧线、持续兴趣、身份变化、未闭环的事 | active 全量注入，recent dormant 少量注入 | `storylines` / `storyline_revisions` |
+| ① 身份画像 | 稳定的"我"：价值观、好奇心方向、判断习惯、表达风格、稳定关系 | 始终注入 | `profile` + `memory/profile.md` |
+| ② 当前主线 | 横跨多条 storyline 的当前阶段、主题或反复卡点 | 非空时始终注入 | `chapter` / `chapter_revisions` + `memory/chapter.md` |
+| ③ Storylines | 用户生活里正在展开的叙事线：项目、关系、情绪弧线、持续兴趣、身份变化、未闭环的事 | active 全量注入；chapter 非空时 recent dormant 只注入 2 条 compact 摘要 | `storylines` / `storyline_revisions` |
 | ④ Fresh episodes | 尚未被 `daily_memory` 消化的少量新 episode 摘要 | 临时注入 | `episodes` |
 | ⑤ 原文 + episode 归档 | 完整原始消息和带证据观察 | 不注入，按需 `search_memory` 检索 | `messages` / `episodes` |
 
@@ -37,7 +37,11 @@ episode 是检索索引和观察索引，不承担跨天叙事维护，也不预
 
 写入只发生在 `weekly_consolidation` 的机械轮里，并且每次变更都写 `chapter_revisions`。主证据字段是 `source_storyline_ids_json`，`source_episode_ids_json` 只作为可选原文锚点。chapter 初始为空，非空后会在系统 prompt 中插在身份画像和 active storylines 之间。
 
+chapter 只用于把握总体阶段。具体回应某个项目、关系或状态时，仍以对应 active storyline 为准；核对事实时回到 storylines、fresh episodes 或 `search_memory` 检索 episode / 原文。chapter 非空后，recent dormant storylines 的常驻注入会从 5 条完整形态收紧为 2 条 compact 摘要，避免旧线压过当前主线。
+
 chapter 的红线比普通 storyline 更严：它只能描述处境与主题，不下心理状态、人格、关系或健康结论。月度即过期的工具判断、战术偏好或阶段性做法也不再写入 profile；阶段性主线归 chapter，可复用知识归 vault，都不算就不写。
+
+`memory/profile.md` 和 `memory/chapter.md` 是可编辑外部界面。程序更新画像或主线时会同时写 DB 和文件；用户手动改文件后，下一个新 session 会读取文件，同步回 DB，并记录一条 `manual_file_edit` 修订。已有热 session 不会中途重载。
 
 ## storylines：中间叙事层
 

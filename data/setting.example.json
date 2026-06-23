@@ -30,9 +30,15 @@
         "model": "claude-sonnet-4-20250514"
       }
     },
-    "routes": {
-      "companion": "normal",
-      "weekly": "strong"
+    "chat_types": {
+      "dm": "normal",
+      "topic": "strong",
+      "thread": "strong",
+      "diary": "strong",
+      "distill": "normal",
+      "daily_memory": "strong",
+      "consolidation": "strong",
+      "knowledge_index": "normal"
     }
   },
   "time": {

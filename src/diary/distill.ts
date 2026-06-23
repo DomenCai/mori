@@ -3,9 +3,6 @@ import type { HarnessEntry } from "../agent/harness.js";
 import type { IngestedMessage } from "../ingest/message.js";
 import type { DiaryService, EpisodeSource } from "./service.js";
 
-const DIARY_ENTRY_TOOL_NAMES = ["write_episode", "search_memory"];
-const IMPORT_DIARY_TOOL_NAMES = ["write_episode"];
-
 export interface DistillDiaryEntryResult {
   fallbackReason?: string;
   promptError?: string;
@@ -33,9 +30,6 @@ export async function distillDiaryEntry(opts: {
   };
 
   entry.currentEpisodeSource = source;
-  await entry.harness.setActiveTools(
-    message.source === "import" ? IMPORT_DIARY_TOOL_NAMES : DIARY_ENTRY_TOOL_NAMES,
-  );
 
   let promptError: string | null = null;
   try {
