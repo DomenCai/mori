@@ -4,7 +4,7 @@
 
 ## 安装
 
-需要 Node ≥ 22.19、pnpm，macOS 需 Xcode Command Line Tools（`better-sqlite3` 安装时本地编译）。安装过程中 `prepare` 脚本会自动跑 `tsc` 编译，无需提前 build。
+需要 Node ≥ 22.19、pnpm。`better-sqlite3` 默认下载预编译二进制，通常无需编译器；只有拿不到匹配 prebuild 需本地编译时（全新 Node 大版本 / 冷门平台 / GitHub 下载受阻）才需要 macOS 的 Xcode Command Line Tools。安装过程中 `prepare` 脚本会自动跑 `tsc` 编译，无需提前 build。
 
 **从 GitHub 安装**（仓库含飞书 secret / LLM key，通常是 private，走你本机的 git 凭据）：
 
@@ -50,6 +50,20 @@ mori -v        # 当前产物版本
 
 `start` 会先检查是否已在运行、飞书是否已配置，再 fork 后台进程。pid 文件由 `start` 写、`stop` 删，并记录进程启动时间和脚本路径；`stop/status` 会先校验进程归属，进程异常退出或 PID 复用后的残留 pid 会被识别和清理。旧格式 pid 文件若对应进程仍存活，会拒绝自动停止，避免误杀无关进程。
 
+## 记忆修改
+
+飞书斜杠命令只支持查看。需要显式修改慢变量或 storyline 状态时，用 CLI：
+
+```bash
+mori profile add "新的画像文本"
+mori profile remove "要删除的唯一子串"
+mori profile replace "旧文本" -- "新文本"
+mori storyline close <id>
+mori storyline reopen <id>
+```
+
+`profile replace` 用 `--` 分隔新旧文本。画像修改会同步写入 SQLite 和 `~/.mori/memory/profile.md`；storyline 状态修改会写入 SQLite 并记录 revision。
+
 ## 文件位置
 
 全部在 `~/.mori/` 下：
@@ -77,13 +91,13 @@ LOG_LEVEL=debug mori run   # 临时调高日志级别
 
 ## 升级
 
-**源码 checkout / link 部署**（当前安装目录本身就是本地 git 工作副本）在仓库根目录运行脚本升级：
+**源码 checkout / link 部署**（当前安装目录本身就是本地 git 工作副本）跑自更新脚本升级。脚本随仓库分发在 deploy-mori skill 下，会自动定位仓库根，在任意目录都能调：
 
 ```bash
-node update.js
+node .claude/skills/deploy-mori/scripts/update.mjs
 ```
 
-`update.js` 会先执行 `git pull --rebase --autostash`，允许本地有少量 tracked 改动；如果拉取或 autostash 产生冲突，脚本中止，需手动处理后重试。拉取成功后，只要远端带来新提交、当前产物的 `dist/build-info.json` 不是当前 `HEAD`、`mori --version` 与源码 `package.json` 版本不一致、当前工作树有 tracked 改动，或 `node_modules` 缺失，就会执行 `pnpm install --frozen-lockfile`、`pnpm build`、迁移/补齐允许自动处理的 `setting.json` 字段，并在更新前 daemon 正在运行时重启。旧版本如果没有 `mori --version`，脚本按 `1.0.0` 处理。`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口。
+也可以直接让协作 agent「升级 mori」，由 deploy-mori skill 驱动同一脚本。`update.mjs` 会先执行 `git pull --rebase --autostash`，允许本地有少量 tracked 改动；如果拉取或 autostash 产生冲突，脚本中止，需手动处理后重试。拉取成功后，只要远端带来新提交、当前产物的 `dist/build-info.json` 不是当前 `HEAD`、`mori --version` 与源码 `package.json` 版本不一致、当前工作树有 tracked 改动，或 `node_modules` 缺失，就会执行 `pnpm install --frozen-lockfile`、`pnpm build`、迁移/补齐允许自动处理的 `setting.json` 字段，并在更新前 daemon 正在运行时重启。旧版本如果没有 `mori --version`，脚本按 `1.0.0` 处理。`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口。
 
 **全局包安装**（`pnpm add -g github:...`）则重新安装：
 

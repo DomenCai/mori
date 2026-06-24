@@ -141,15 +141,18 @@ export class VaultService {
 
   listFrontmatter(): VaultFile[] {
     this.ensureBaseDirs();
-    return walkMarkdown(this.root).map((file) => {
-      const raw = readFileSync(file, "utf-8");
-      const parsed = parseMarkdown(raw);
-      return {
-        path: this.toRelative(file),
-        frontmatter: parsed.frontmatter,
-        body: "",
-      };
-    });
+    return walkMarkdown(this.root)
+      .filter((file) => this.toRelative(file) !== ".index.md")
+      .map((file) => {
+        const relPath = this.toRelative(file);
+        const raw = readFileSync(file, "utf-8");
+        const parsed = parseMarkdown(raw);
+        return {
+          path: relPath,
+          frontmatter: parsed.frontmatter,
+          body: "",
+        };
+      });
   }
 
   buildDeterministicIndex(): string {

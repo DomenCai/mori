@@ -29,8 +29,8 @@ import {
   VaultService,
   type KnowledgeArticle,
 } from "../knowledge/vault.js";
-import { nowISO, runWindow } from "../utils.js";
-import { renderMarkdownCard } from "../lark/cards.js";
+import { runWindow } from "../utils.js";
+import { renderKnowledgeCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 
 const log = logger("cron");
@@ -57,7 +57,11 @@ export function initSchedules(
           const current = getCurrentSchedule(schedule.id);
           if (!current || current.kind !== "builtin") return;
           log.info(`触发 builtin: ${schedule.id}`);
-          await runBuiltin(current, db, channel, harnessManager, registry);
+          try {
+            await runBuiltin(current, db, channel, harnessManager, registry);
+          } catch (err) {
+            log.error(`${current.builtin} 失败:`, err);
+          }
         }),
       );
     }
@@ -117,6 +121,34 @@ export function initSchedules(
   return jobs;
 }
 
+export async function runScheduleNow(
+  scheduleId: string,
+  db: Database.Database,
+  channel: LarkChannel,
+  harnessManager: HarnessManager,
+  registry: ChatRegistry,
+  setting: SettingConfig,
+): Promise<void> {
+  const schedule = getCurrentSchedule(scheduleId);
+  if (!schedule) {
+    throw new Error(`定时任务不存在：${scheduleId}`);
+  }
+
+  log.info(`手动触发定时任务: ${schedule.id}`);
+  if (schedule.kind === "builtin") {
+    await runBuiltin(schedule, db, channel, harnessManager, registry);
+    return;
+  }
+
+  await runScriptSchedule(
+    schedule,
+    channel,
+    registry,
+    db,
+    setting.script.defaults,
+  );
+}
+
 async function runBuiltin(
   schedule: ScheduleDefinition,
   db: Database.Database,
@@ -125,16 +157,12 @@ async function runBuiltin(
   registry: ChatRegistry,
 ): Promise<void> {
   if (schedule.kind !== "builtin") return;
-  try {
-    if (schedule.builtin === "weekly_summary") {
-      await runConsolidation(db, harnessManager, channel, registry);
-    } else if (schedule.builtin === "daily_memory") {
-      await runDailyMemory(db, harnessManager, channel, registry);
-    } else if (schedule.builtin === "knowledge_index") {
-      await harnessManager.runKnowledgeIndexBuiltin();
-    }
-  } catch (err) {
-    log.error(`${schedule.builtin} 失败:`, err);
+  if (schedule.builtin === "weekly_summary") {
+    await runConsolidation(db, harnessManager, channel, registry);
+  } else if (schedule.builtin === "daily_memory") {
+    await runDailyMemory(db, harnessManager, channel, registry);
+  } else if (schedule.builtin === "knowledge_index") {
+    await harnessManager.runKnowledgeIndexBuiltin();
   }
 }
 
@@ -152,6 +180,10 @@ async function runScriptSchedule(
     scriptPath,
     mergeScriptRuntime(scriptDefaults, schedule.runtime),
   );
+  if (article === null) {
+    log.info(`script ${schedule.id} 本窗口无投递，跳过`);
+    return;
+  }
   const writeResult = vault.writeInbox(schedule.deliver.inbox, slug, article);
   if (writeResult.existed) {
     log.info(`script ${schedule.id} 本窗口已投递，跳过: ${writeResult.path}`);
@@ -160,8 +192,7 @@ async function runScriptSchedule(
 
   if (!schedule.deliver.notify) return;
   const chatId = await ensureNotificationChat(channel, registry);
-  const message = renderKnowledgeNotification(article, writeResult.path);
-  const sent = await channel.send(chatId, { card: renderMarkdownCard(message) });
+  const sent = await channel.send(chatId, { card: renderKnowledgeCard(article.title, article.body) });
   vault.updateFrontmatter(writeResult.path, {
     pushed_message_id: sent.messageId,
   });
@@ -170,7 +201,7 @@ async function runScriptSchedule(
     source: "lark",
     conversationId: larkChatConversationId(chatId),
     conversationType: "notification",
-    content: message,
+    content: article.body,
     knowledgePath: writeResult.path,
   });
 }
@@ -205,14 +236,14 @@ function getCurrentSchedule(scheduleId: string): ScheduleDefinition | undefined 
 function runUserScript(
   scriptPath: string,
   runtime: ScriptRuntimeConfig,
-): Promise<KnowledgeArticle> {
+): Promise<KnowledgeArticle | null> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./script-worker.js", import.meta.url), {
       workerData: { scriptPath },
       resourceLimits: runtime.resourceLimits,
     });
     const timer = setTimeout(() => {
-      worker.terminate().catch(() => {});
+      worker.terminate().catch(() => { });
       reject(new Error(`script 超时：${basename(scriptPath)}`));
     }, runtime.timeoutMs);
 
@@ -255,9 +286,11 @@ function mergeScriptRuntime(
   };
 }
 
-function validateScriptResult(value: unknown): KnowledgeArticle {
-  if (!value || typeof value !== "object") {
-    throw new Error("script 返回值必须是对象");
+function validateScriptResult(value: unknown): KnowledgeArticle | null {
+  // 脚本返回 null/undefined 表示“本窗口无新内容”，框架静默跳过。
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") {
+    throw new Error("script 返回值必须是对象或 null");
   }
   const record = value as Record<string, unknown>;
   const required = ["title", "domain", "brief", "body"];
@@ -300,21 +333,6 @@ async function ensureNotificationChat(
   });
   registry.register(chatId, "notification", "mori 通知");
   return chatId;
-}
-
-function renderKnowledgeNotification(
-  article: KnowledgeArticle,
-  path: string,
-): string {
-  const tags = article.tags?.length ? `\n标签：${article.tags.join(", ")}` : "";
-  return `**${article.title}**
-
-领域：${article.domain}${tags}
-路径：${path}
-
-${article.brief}
-
-普通回复这张卡会收藏并记录你的看法；话题回复会进入临时深聊。`;
 }
 
 async function runKnowledgeIndexIfNeeded(

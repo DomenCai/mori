@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// 源码部署自更新：git pull，必要时重新 install/build，进程内补全/迁移 setting.json，并按需重启 daemon。
+// 从 <repo>/.claude/skills/deploy-mori/scripts/ 运行，自动定位仓库根（git toplevel），可在任意 cwd 调用。
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -25,7 +27,7 @@ function fail(message) {
 
 function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, {
-    cwd: scriptDir,
+    cwd: repoRoot,
     encoding: "utf-8",
     stdio: opts.capture ? ["ignore", "pipe", "pipe"] : "inherit",
   });
@@ -51,12 +53,12 @@ function readJson(path) {
 }
 
 function readSourceVersion() {
-  const pkg = readJson(join(scriptDir, "package.json"));
+  const pkg = readJson(join(repoRoot, "package.json"));
   return pkg.version;
 }
 
 function readBuildCommit() {
-  const path = join(scriptDir, "dist", "build-info.json");
+  const path = join(repoRoot, "dist", "build-info.json");
   if (!existsSync(path)) return "";
   const info = readJson(path);
   return typeof info.gitCommit === "string" ? info.gitCommit : "";
@@ -76,7 +78,7 @@ function outputContainsRunning(text) {
 }
 
 function isDaemonRunning() {
-  const distMain = join(scriptDir, "dist", "main.js");
+  const distMain = join(repoRoot, "dist", "main.js");
   if (existsSync(distMain)) {
     const result = run(process.execPath, [distMain, "status"], {
       capture: true,
@@ -149,7 +151,7 @@ function syncSettingFields() {
     return;
   }
 
-  const example = readJson(join(scriptDir, "data", "setting.example.json"));
+  const example = readJson(join(repoRoot, "data", "setting.example.json"));
   const current = readJson(settingPath);
   const added = [];
   const migrated = migrateSetting(current, example);
@@ -178,16 +180,21 @@ function shortCommit(commit) {
 }
 
 if (process.env.MORI_DEV) {
-  fail("dev 模式不支持 update.js，请直接用 git/pnpm 操作仓库。");
+  fail("dev 模式不支持自更新，请直接用 git/pnpm 操作仓库。");
 }
 
-const gitRoot = run("git", ["rev-parse", "--show-toplevel"], {
-  capture: true,
-  allowFailure: true,
+// 定位仓库根：脚本在仓库内，git toplevel 即仓库根
+const toplevel = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+  cwd: scriptDir,
+  encoding: "utf-8",
 });
-if (!gitRoot.ok) fail("当前目录不是 git 工作副本。");
-if (realpathSync(gitRoot.out) !== scriptDir) {
-  fail("update.js 必须在 mori 仓库根目录运行。");
+if (toplevel.status !== 0) fail("脚本不在 git 工作副本内，无法定位仓库。");
+const repoRoot = realpathSync(toplevel.stdout.trim());
+if (
+  !existsSync(join(repoRoot, "package.json")) ||
+  readJson(join(repoRoot, "package.json")).name !== "mori"
+) {
+  fail(`定位到的仓库 ${repoRoot} 不是 mori。`);
 }
 
 const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
@@ -200,6 +207,7 @@ if (branch === "HEAD") {
 const oldHead = run("git", ["rev-parse", "HEAD"], { capture: true }).out;
 const installedVersion = readInstalledVersion();
 
+log(`仓库：${repoRoot}`);
 log(`拉取 ${branch}：git pull --rebase --autostash`);
 const pull = run("git", ["pull", "--rebase", "--autostash"], {
   allowFailure: true,
@@ -232,7 +240,7 @@ if (!builtCommit) {
 if (localChanges) {
   reasons.push("存在本地 tracked 改动，重新构建当前工作树");
 }
-if (!existsSync(join(scriptDir, "node_modules"))) {
+if (!existsSync(join(repoRoot, "node_modules"))) {
   reasons.push("node_modules 缺失");
 }
 
@@ -256,8 +264,8 @@ syncSettingFields();
 
 if (wasRunning) {
   log("重启 daemon");
-  run(process.execPath, [join(scriptDir, "dist", "main.js"), "stop"]);
-  run(process.execPath, [join(scriptDir, "dist", "main.js"), "start"]);
+  run(process.execPath, [join(repoRoot, "dist", "main.js"), "stop"]);
+  run(process.execPath, [join(repoRoot, "dist", "main.js"), "start"]);
 } else {
   log("daemon 原本未运行，仅更新代码和产物。");
 }

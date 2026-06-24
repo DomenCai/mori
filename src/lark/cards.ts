@@ -1,4 +1,11 @@
-import { businessDateTime, summarizeTextDelta } from "../utils.js";
+import { businessDateKey, textLineChanges } from "../utils.js";
+import type {
+  ChapterRevision,
+  DailyMemoryRun,
+  ProfileRevision,
+  Storyline,
+  StorylineRevision,
+} from "../memory/service.js";
 
 export type AgentToolStatus = "running" | "done" | "error";
 
@@ -41,6 +48,20 @@ export function renderMarkdownCard(content: string): object {
   };
 }
 
+// 定时知识投递卡：标题 + 正文，底部一道横线 + 小字回复提示。
+const KNOWLEDGE_CARD_HINT =
+  "普通回复这张卡会收藏并记录你的看法；话题回复会进入临时深聊。";
+
+export function renderKnowledgeCard(title: string, content: string): object {
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: title } },
+    body: {
+      elements: [markdown(content), { tag: "hr" }, note(KNOWLEDGE_CARD_HINT)],
+    },
+  };
+}
+
 // 斜杠命令的展示卡片：带蓝色标题栏 + 一段 markdown 正文。
 export function renderInfoCard(title: string, body: string): object {
   return {
@@ -50,20 +71,105 @@ export function renderInfoCard(title: string, body: string): object {
   };
 }
 
-// 画像变更历史卡：每条 = 业务时区时间 · 原因 + 简洁 delta。
+export function renderStorylinesCard(items: Storyline[]): object {
+  const active = items.filter((item) => item.status === "active").length;
+  const dormant = items.filter((item) => item.status === "dormant").length;
+  const elements: object[] = [
+    note(`active: ${active} · dormant: ${dormant} · total: ${items.length}`),
+    ...items.map((item) =>
+      collapsiblePanel(storylineHeader(item), storylineBody(item, true)),
+    ),
+  ];
+
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "📋 Storylines" }, template: "blue" },
+    config: { summary: { content: `Storylines（${items.length}）` } },
+    body: { elements },
+  };
+}
+
+export function renderStorylineCard(
+  item: Storyline,
+  revisions: StorylineRevision[],
+): object {
+  const elements: object[] = [
+    collapsiblePanel(storylineHeader(item), storylineBody(item), { expanded: true }),
+  ];
+
+  if (revisions.length > 0) {
+    elements.push(
+      collapsiblePanel(
+        `🧾 修订记录（${revisions.length}）`,
+        revisions
+          .map((r) => `- **${dateFormat(r.created_at)}** · ${r.operation} · ${r.reason}`)
+          .join("\n"),
+      ),
+    );
+  }
+
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "📋 Storyline" }, template: "blue" },
+    config: { summary: { content: item.title } },
+    body: { elements },
+  };
+}
+
+export function renderDailyMemoryRunsCard(
+  runs: DailyMemoryRun[],
+  options: { expanded?: boolean; expandedIndex?: number } = {},
+): object {
+  const elements = runs.map((run, index) =>
+    collapsiblePanel(dailyRunHeader(run), dailyRunBody(run), {
+      expanded: options.expanded ?? index === options.expandedIndex,
+    }),
+  );
+
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "🌙 Daily Memory" }, template: "blue" },
+    config: { summary: { content: `Daily Memory（${runs.length}）` } },
+    body: { elements },
+  };
+}
+
+export function renderChapterHistoryCard(revisions: ChapterRevision[]): object {
+  const elements: object[] = revisions.length
+    ? revisions.map((revision, index) =>
+      collapsiblePanel(
+        chapterRevisionHeader(revision),
+        chapterRevisionBody(revision),
+        { expanded: index === 0 },
+      ),
+    )
+    : [markdown("暂无当前主线变更历史")];
+
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "🧭 当前主线历史" }, template: "blue" },
+    config: { summary: { content: `当前主线历史（${revisions.length}）` } },
+    body: { elements },
+  };
+}
+
+// 画像变更历史卡：列表只露出行级变化摘要，展开后看原因和证据锚点。
 export function renderProfileHistoryCard(
-  rows: Array<{ old_content: string | null; new_content: string; reason: string; created_at: string }>,
+  rows: ProfileRevision[],
 ): object {
   const elements: object[] = rows.length
-    ? rows.map((r) =>
-        markdown(
-          `**${businessDateTime(new Date(r.created_at))}** · ${r.reason}\n${summarizeTextDelta(r.old_content ?? "", r.new_content)}`,
-        ),
-      )
+    ? rows.map((r, index) =>
+      collapsiblePanel(
+        profileRevisionHeader(r),
+        profileRevisionBody(r),
+        { expanded: index === 0 },
+      ),
+    )
     : [markdown("暂无画像变更历史")];
   return {
     schema: "2.0",
     header: { title: { tag: "plain_text", content: "📋 身份画像历史" }, template: "blue" },
+    config: { summary: { content: `身份画像历史（${rows.length}）` } },
     body: { elements },
   };
 }
@@ -124,10 +230,14 @@ export function renderWeeklyFriendCard(message: string): object {
   };
 }
 
-function collapsiblePanel(title: string, body: string): object {
+function collapsiblePanel(
+  title: string,
+  body: string,
+  options: { expanded?: boolean } = {},
+): object {
   return {
     tag: "collapsible_panel",
-    expanded: false,
+    expanded: options.expanded ?? false,
     header: {
       title: { tag: "markdown", content: `**${title}**` },
       vertical_align: "center",
@@ -144,6 +254,90 @@ function collapsiblePanel(title: string, body: string): object {
     padding: "8px 8px 8px 8px",
     elements: [{ tag: "markdown", content: body, text_size: "notation" }],
   };
+}
+
+function storylineHeader(item: Storyline): string {
+  return `${storylineStatusIcon(item.status)} ${item.title} · ${item.kind}`;
+}
+
+function storylineBody(item: Storyline, showId: boolean = false): string {
+  const lines = [
+    showId ? `**ID**: ${item.id}\n` : "",
+    item.summary,
+    item.current_tension ? `\n**当前张力**\n${item.current_tension}` : "",
+    item.emotional_arc ? `\n**情绪/态度弧线**\n${item.emotional_arc}` : "",
+    item.people.length ? `\n**相关人**\n${item.people.join("、")}` : "",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function storylineStatusIcon(status: Storyline["status"]): string {
+  if (status === "active") return "🟢";
+  if (status === "dormant") return "💤";
+  return "✅";
+}
+
+function dailyRunHeader(run: DailyMemoryRun): string {
+  const nudge = run.nudge_sent ? "nudge sent" : run.nudge_evaluated ? "nudge evaluated" : "no nudge";
+  return `${dailyRunStatusIcon(run.status)} ${run.date_key} · ${run.input_episode_ids.length} episodes · ${run.storyline_changes.length} changes · ${nudge}`;
+}
+
+function dailyRunBody(run: DailyMemoryRun): string {
+  const lines = [
+    run.dream_summary ? run.dream_summary : "",
+    run.nudge_text ? `\n**nudge**\n${run.nudge_text}` : "",
+    run.error ? `\n**error**\n${run.error}` : "",
+    run.storyline_changes.length
+      ? `\n**storyline changes**\n${run.storyline_changes
+        .map((c) => `- ${c.operation} ${c.title} → ${c.status}（${c.reason}）`)
+        .join("\n")}`
+      : "",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function dailyRunStatusIcon(status: string): string {
+  if (status === "completed") return "✅";
+  if (status === "failed") return "❌";
+  if (status === "running") return "⏳";
+  return "🌙";
+}
+
+function chapterRevisionBody(revision: ChapterRevision): string {
+  const changes = textLineChanges(revision.old_content ?? "", revision.new_content);
+  const lines = [truncate(revision.reason, 1200)];
+  if (revision.source_storyline_ids.length > 0) {
+    lines.push(`\n**source storylines**\n${revision.source_storyline_ids.join("\n")}`);
+  }
+  if (changes.removed.length > 0) {
+    lines.push(`\n**删除的行**\n${changes.removed.join("\n")}`);
+  }
+  if (changes.added.length > 0) {
+    lines.push(`\n**新增的行**\n${changes.added.join("\n")}`);
+  }
+  return lines.filter(Boolean).join("\n\n");
+}
+
+function chapterRevisionHeader(revision: ChapterRevision): string {
+  const changes = textLineChanges(revision.old_content ?? "", revision.new_content);
+  return `🧭 ${dateFormat(revision.created_at)} · +${changes.added.length}/-${changes.removed.length}`;
+}
+
+function profileRevisionHeader(revision: ProfileRevision): string {
+  const changes = textLineChanges(revision.old_content ?? "", revision.new_content);
+  return `🧠 ${dateFormat(revision.created_at)} · +${changes.added.length}/-${changes.removed.length}`;
+}
+
+function profileRevisionBody(revision: ProfileRevision): string {
+  const changes = textLineChanges(revision.old_content ?? "", revision.new_content);
+  const lines = [truncate(revision.reason, 1200)];
+  if (changes.removed.length > 0) {
+    lines.push(`\n**删除的行**\n${changes.removed.join("\n")}`);
+  }
+  if (changes.added.length > 0) {
+    lines.push(`\n**新增的行**\n${changes.added.join("\n")}`);
+  }
+  return lines.filter(Boolean).join("\n\n");
 }
 
 export function createAgentCardState(): AgentCardState {
@@ -461,6 +655,10 @@ function toolLabel(toolName: string): string {
     promote: "晋升知识",
   };
   return label[toolName] ?? toolName;
+}
+
+function dateFormat(date: string): string {
+  return businessDateKey(new Date(date));
 }
 
 function markdown(content: string): object {

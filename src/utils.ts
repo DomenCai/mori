@@ -178,28 +178,37 @@ export function businessDateTime(date = new Date()): string {
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }
 
-// 一段文本的变更摘要：按行掐掉公共前后缀，留下真正变动的整行
-// （避免在 markdown 记号中间截断出 `- **` 这类碎片）。
-export function summarizeTextDelta(oldText: string, newText: string): string {
+export interface TextLineChanges {
+  removed: string[];
+  added: string[];
+}
+
+// 按行掐掉公共前后缀，留下真正变动的整行。
+export function textLineChanges(oldText: string, newText: string): TextLineChanges {
   const oldLines = oldText.split("\n");
   const newLines = newText.split("\n");
-  let p = 0;
-  while (p < oldLines.length && p < newLines.length && oldLines[p] === newLines[p]) p++;
-  let s = 0;
+  let prefix = 0;
   while (
-    s < oldLines.length - p &&
-    s < newLines.length - p &&
-    oldLines[oldLines.length - 1 - s] === newLines[newLines.length - 1 - s]
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
   ) {
-    s++;
+    prefix++;
   }
-  const removed = oldLines.slice(p, oldLines.length - s).join("\n").trim();
-  const added = newLines.slice(p, newLines.length - s).join("\n").trim();
-  const clip = (t: string) => (t.length > 80 ? `${t.slice(0, 80)}…` : t);
-  if (removed && added) return `「${clip(removed)}」→「${clip(added)}」`;
-  if (added) return `＋ ${clip(added)}`;
-  if (removed) return `－ ${clip(removed)}`;
-  return "（无文本变化）";
+
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  return {
+    removed: oldLines.slice(prefix, oldLines.length - suffix).filter((line) => line.trim()),
+    added: newLines.slice(prefix, newLines.length - suffix).filter((line) => line.trim()),
+  };
 }
 
 // ISO 8601 周序号（周一起始、周四定年），基于业务时区日历日。

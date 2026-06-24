@@ -4,7 +4,7 @@ import type { HarnessManager } from "../agent/harness.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import type { MutableClock } from "../clock.js";
 import { type StorylineChangeSummary } from "./service.js";
-import { genId, businessDateKey, summarizeTextDelta, weekKey } from "../utils.js";
+import { genId, businessDateKey, textLineChanges, weekKey } from "../utils.js";
 import { logger } from "../log.js";
 import { renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
@@ -179,7 +179,7 @@ ${JSON.stringify(currentVisibleStorylines, null, 2)}
       .getProfileRevisionsByRun(runId)
       .map((r) => ({
         reason: r.reason,
-        delta: summarizeTextDelta(r.old_content, r.new_content),
+        delta: formatLineChangeCounts(r.old_content, r.new_content),
       }));
 
     const recordText = buildWeeklyRecordText(
@@ -277,6 +277,11 @@ function compactStorylineChanges(
     status: change.status,
     reason: change.reason,
   }));
+}
+
+function formatLineChangeCounts(oldText: string, newText: string): string {
+  const changes = textLineChanges(oldText, newText);
+  return `+${changes.added.length}/-${changes.removed.length}`;
 }
 
 function buildWeeklyRecordText(

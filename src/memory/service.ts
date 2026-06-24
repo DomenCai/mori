@@ -54,6 +54,16 @@ export interface StorylineRevision {
   created_at: string;
 }
 
+export interface ProfileRevision {
+  id: string;
+  old_content: string | null;
+  new_content: string;
+  source_episode_ids: string[];
+  reason: string;
+  run_id: string | null;
+  created_at: string;
+}
+
 export interface StorylineChangeSummary {
   id: string;
   title: string;
@@ -96,6 +106,10 @@ type StorylineRow = Omit<Storyline, "people" | "evidence_episode_ids"> & {
 };
 
 type RevisionRow = Omit<StorylineRevision, "source_episode_ids"> & {
+  source_episode_ids_json: string;
+};
+
+type ProfileRevisionRow = Omit<ProfileRevision, "source_episode_ids"> & {
   source_episode_ids_json: string;
 };
 
@@ -193,6 +207,13 @@ export class MemoryService {
     }>;
   }
 
+  getProfileRevisions(limit = 10): ProfileRevision[] {
+    const rows = this.db
+      .prepare("SELECT * FROM profile_revisions ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as ProfileRevisionRow[];
+    return rows.map(parseProfileRevision);
+  }
+
   // ── Chapter ──
 
   getChapter(): string {
@@ -231,6 +252,13 @@ export class MemoryService {
         "SELECT * FROM chapter_revisions WHERE run_id = ? ORDER BY created_at ASC",
       )
       .all(runId) as ChapterRevisionRow[];
+    return rows.map(parseChapterRevision);
+  }
+
+  getChapterRevisions(limit = 10): ChapterRevision[] {
+    const rows = this.db
+      .prepare("SELECT * FROM chapter_revisions ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as ChapterRevisionRow[];
     return rows.map(parseChapterRevision);
   }
 
@@ -862,6 +890,14 @@ function parseStoryline(row: StorylineRow): Storyline {
 }
 
 function parseRevision(row: RevisionRow): StorylineRevision {
+  const { source_episode_ids_json, ...rest } = row;
+  return {
+    ...rest,
+    source_episode_ids: parseJsonArray(source_episode_ids_json),
+  };
+}
+
+function parseProfileRevision(row: ProfileRevisionRow): ProfileRevision {
   const { source_episode_ids_json, ...rest } = row;
   return {
     ...rest,

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { schedulesPath } from "../config.js";
 import type { ScriptRuntimeConfig } from "../config.js";
+import { logger } from "../log.js";
 
 export interface SchedulesConfig {
   schedules: ScheduleDefinition[];
@@ -74,6 +75,8 @@ type ScheduleOverride = { id: string; kind?: "builtin" | "script" } & Record<
   unknown
 >;
 
+const log = logger("schedule-config");
+
 function readOverrides(): ScheduleOverride[] {
   if (!existsSync(schedulesPath)) return [];
   const parsed = JSON.parse(readFileSync(schedulesPath, "utf-8")) as {
@@ -100,7 +103,7 @@ export function loadSchedulesConfig(): SchedulesConfig {
   return { schedules };
 }
 
-export function toggleScheduleEnabled(scheduleId: string): SchedulesConfig {
+export function setScheduleEnabled(scheduleId: string, enabled: boolean): SchedulesConfig {
   const current = loadSchedulesConfig().schedules.find(
     (item) => item.id === scheduleId,
   );
@@ -108,13 +111,16 @@ export function toggleScheduleEnabled(scheduleId: string): SchedulesConfig {
     throw new Error(`定时任务不存在：${scheduleId}`);
   }
 
-  // 只把翻转后的 enabled 写进覆盖层，不动该任务其它字段、也不落盘基线默认。
+  // 只把 enabled 写进覆盖层，不动该任务其它字段、也不落盘基线默认。
   const overrides = readOverrides();
   const index = overrides.findIndex((item) => item.id === scheduleId);
+  log.info(
+    `设置定时任务启停 id=${scheduleId} current=${current.enabled} target=${enabled} override=${index >= 0 ? "update" : "insert"}`,
+  );
   if (index >= 0) {
-    overrides[index] = { ...overrides[index], enabled: !current.enabled };
+    overrides[index] = { ...overrides[index], enabled };
   } else {
-    overrides.push({ id: scheduleId, kind: current.kind, enabled: !current.enabled });
+    overrides.push({ id: scheduleId, kind: current.kind, enabled });
   }
 
   mkdirSync(dirname(schedulesPath), { recursive: true, mode: 0o700 });
@@ -122,5 +128,18 @@ export function toggleScheduleEnabled(scheduleId: string): SchedulesConfig {
     mode: 0o600,
   });
 
-  return loadSchedulesConfig();
+  const next = loadSchedulesConfig();
+  const saved = next.schedules.find((item) => item.id === scheduleId);
+  log.info(`定时任务启停已写入 id=${scheduleId} saved=${saved?.enabled}`);
+  return next;
+}
+
+export function toggleScheduleEnabled(scheduleId: string): SchedulesConfig {
+  const current = loadSchedulesConfig().schedules.find(
+    (item) => item.id === scheduleId,
+  );
+  if (!current) {
+    throw new Error(`定时任务不存在：${scheduleId}`);
+  }
+  return setScheduleEnabled(scheduleId, !current.enabled);
 }

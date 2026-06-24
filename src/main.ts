@@ -1,43 +1,17 @@
 #!/usr/bin/env node
 import { getDb, initDb, closeDb } from "./storage/db.js";
 import {
-  loadLarkConfig,
-  saveLarkConfig,
   loadLlmConfig,
   loadSetting,
   loadAppVersion,
-  resolveProfile,
-  sessionsDir,
   logsDir,
-  type LarkConfig,
 } from "./config.js";
-import { initChannel } from "./lark/channel.js";
-import { runRegistrationWizard } from "./lark/setup.js";
-import { ChatRegistry } from "./lark/chatRegistry.js";
-import {
-  handleCommand,
-  renderSchedulesCard,
-  type CommandContext,
-} from "./lark/commands.js";
-import { HarnessManager, type HarnessModelProfile } from "./agent/harness.js";
-import {
-  handleChatMessage,
-  handleDiaryMessage,
-  handleLensMessage,
-  handleNotificationMessage,
-  isDiaryEntryMessage,
-} from "./lark/messageHandlers.js";
-import { parseLens } from "./lark/lenses.js";
-import { initSchedules } from "./schedule/cron.js";
 import { installDailyFileLogging, logger } from "./log.js";
 import { startDaemon, stopDaemon, showStatus } from "./daemon.js";
-import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
-import { toggleScheduleEnabled } from "./schedule/config.js";
-import { toIngestedMessage } from "./lark/ingest.js";
-import type { ConversationType } from "./ingest/message.js";
+import { startLarkBot } from "./lark/bot.js";
+import { MemoryService } from "./memory/service.js";
 
 const bootLog = logger("boot");
-const larkLog = logger("lark");
 
 async function runForeground() {
   const setting = loadSetting();
@@ -56,172 +30,15 @@ async function runForeground() {
   });
 
   // ── 1. 配置 & 数据库 ──
-  let loaded = loadLarkConfig();
-  if (!loaded) {
-    loaded = await runRegistrationWizard();
-    saveLarkConfig(loaded);
-    bootLog.info("飞书配置已保存到 lark_config.json");
-  }
-  const larkConfig: LarkConfig = loaded;
   const llmConfig = loadLlmConfig();
-
   bootLog.info("配置加载完成");
-
-  // 启动时把每个档位解析一次（保持 prompt 缓存稳定）；chatType→档位的分派交给 chat_types 配置。
-  const profiles: Record<string, HarnessModelProfile> = {};
-  for (const name of Object.keys(llmConfig.model_profiles)) {
-    profiles[name] = { name, ...resolveProfile(name, llmConfig) };
-  }
-  bootLog.info(
-    `模型档位: ${Object.values(profiles)
-      .map((p) => `${p.name} → ${p.model.id}`)
-      .join(", ")}`,
-  );
 
   const db = getDb();
   initDb(db);
   bootLog.info("SQLite 初始化完成");
 
-  // ── 2. 飞书 ──
-  const channel = initChannel(larkConfig);
-  const registry = new ChatRegistry(larkConfig, saveLarkConfig);
-
-  // ── 3. Agent 管理器 ──
-  const harnessManager = new HarnessManager({
-    db,
-    sessionsDir,
-    profiles,
-    chatTypes: llmConfig.chat_types,
-    channel,
-    registry,
-  });
-
-  const cmdCtx: CommandContext = {
-    channel,
-    db,
-    registry,
-    harnessManager,
-    ownerOpenId: larkConfig.ownerOpenId ?? "",
-  };
-
-  // ── 4. 消息处理 ──
-  channel.on({
-    message: async (msg: NormalizedMessage) => {
-      larkLog.info(
-        `收到消息 from=${msg.senderId} type=${msg.chatType} chat=${msg.chatId} len=${msg.content.length}`,
-      );
-      // owner 绑定：扫码已知则直接校验；未知则首个私聊发消息的人成为 owner。
-      if (!cmdCtx.ownerOpenId) {
-        if (msg.chatType !== "p2p") return;
-        cmdCtx.ownerOpenId = msg.senderId;
-        larkConfig.ownerOpenId = msg.senderId;
-        saveLarkConfig(larkConfig);
-        bootLog.info(`owner 已绑定: ${msg.senderId}`);
-      } else if (msg.senderId !== cmdCtx.ownerOpenId) {
-        larkLog.debug(`忽略非 owner 消息 from=${msg.senderId}`);
-        return;
-      }
-
-      const ingested = toIngestedMessage(
-        msg,
-        resolveLarkConversationType(msg, registry),
-      );
-
-      // 命令路由
-      const { handled } = await handleCommand(msg, cmdCtx);
-      if (handled) {
-        larkLog.info("命令已处理");
-        return;
-      }
-
-      let resolvedType = registry.getType(msg.chatId);
-      if (!resolvedType && msg.chatType === "p2p") {
-        registry.register(msg.chatId, "dm");
-        resolvedType = "dm";
-      }
-
-      if (!resolvedType) {
-        await channel.send(msg.chatId, {
-          text: "这个群还没有注册为日记群或其它受管会话，已忽略本条消息。",
-        });
-        return;
-      }
-
-      const lens = parseLens(msg.content);
-      if (lens && resolvedType !== "diary") {
-        const lensChatType = msg.threadId || resolvedType === "notification"
-          ? "thread"
-          : resolvedType;
-        await handleLensMessage(
-          msg,
-          ingested,
-          channel,
-          harnessManager,
-          lensChatType,
-          lens,
-        );
-        return;
-      }
-
-      if (msg.threadId) {
-        await handleChatMessage(msg, ingested, channel, harnessManager, "thread");
-      } else if (resolvedType === "diary") {
-        await handleDiaryMessage(
-          msg,
-          ingested,
-          channel,
-          harnessManager,
-          isDiaryEntryMessage(msg) ? "entry" : "reply",
-        );
-      } else if (resolvedType === "notification") {
-        const handledNotification = await handleNotificationMessage(
-          msg,
-          ingested,
-          channel,
-          harnessManager,
-        );
-        if (!handledNotification) {
-          await channel.send(msg.chatId, {
-            text: "这条通知群消息没有关联到知识卡片，已忽略。",
-          });
-        }
-      } else if (resolvedType === "topic") {
-        await handleChatMessage(msg, ingested, channel, harnessManager, "topic");
-      } else {
-        await handleChatMessage(msg, ingested, channel, harnessManager, "dm");
-      }
-    },
-    cardAction: async (evt: CardActionEvent) => {
-      if (cmdCtx.ownerOpenId && evt.operator.openId !== cmdCtx.ownerOpenId) {
-        larkLog.debug(`忽略非 owner 卡片动作 from=${evt.operator.openId}`);
-        return;
-      }
-      if (await handleScheduleAction(evt, channel)) return;
-    },
-    error: (err) => {
-      larkLog.error("错误:", err.message);
-    },
-    reconnecting: () => {
-      larkLog.warn("正在重连…");
-    },
-    reconnected: () => {
-      larkLog.info("已重连");
-    },
-  });
-
-  // ── 5. 定时任务 ──
-  initSchedules(db, channel, harnessManager, registry, setting);
-
-  // ── 6. 空闲清理 ──
-  setInterval(() => {
-    harnessManager.cleanupIdle(setting.sessions.policies).catch((err) => {
-      bootLog.error("空闲 scope 清理失败:", err);
-    });
-  }, setting.sessions.sweepIntervalMs);
-
-  // ── 7. 启动 ──
-  await channel.connect();
-  bootLog.info("飞书 WebSocket 已连接，bot 启动完成 ✓");
+  // ── 2. 飞书 bot ──
+  await startLarkBot(db, llmConfig, setting);
 
   // 优雅退出
   const shutdown = () => {
@@ -231,39 +48,6 @@ async function runForeground() {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-}
-
-async function handleScheduleAction(
-  evt: CardActionEvent,
-  channel: ReturnType<typeof initChannel>,
-): Promise<boolean> {
-  const value = evt.action.value;
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  if (record.action !== "toggle_schedule") return false;
-  const scheduleId = record.schedule_id;
-  if (typeof scheduleId !== "string") return false;
-
-  let config;
-  try {
-    config = toggleScheduleEnabled(scheduleId);
-  } catch {
-    await channel.send(evt.chatId, { text: `定时任务不存在：${scheduleId}` });
-    return true;
-  }
-  await channel.updateCard(evt.messageId, renderSchedulesCard(config));
-  return true;
-}
-
-function resolveLarkConversationType(
-  msg: NormalizedMessage,
-  registry: ChatRegistry,
-): ConversationType {
-  if (msg.threadId) return "thread";
-  const registered = registry.getType(msg.chatId);
-  if (registered) return registered;
-  if (msg.chatType === "p2p") return "dm";
-  return "topic";
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────
@@ -276,10 +60,111 @@ const HELP = `mori — 飞书优先的对话型个人思想伙伴
   start             后台守护启动
   stop              停止后台守护
   status            查看运行状态
+  profile add <文本>               添加身份画像
+  profile remove <文本>            删除身份画像中的唯一子串
+  profile replace <旧文本> -- <新文本>  替换身份画像中的唯一子串
+  storyline close <id>             手动软关闭 storyline
+  storyline reopen <id>            手动重新激活 storyline
   help, -h, --help  显示本帮助
   version, -v, --version  显示版本号
 
 不带命令时默认为 run。`;
+
+function runMemoryCli(fn: (memory: MemoryService) => void): void {
+  const db = getDb();
+  initDb(db);
+  try {
+    const memory = new MemoryService(db);
+    memory.syncEditableMemoryFiles();
+    fn(memory);
+  } finally {
+    closeDb();
+  }
+}
+
+function failCli(message: string): never {
+  console.error(message);
+  process.exit(1);
+}
+
+function formatCliError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function runProfileCli(args: string[]): void {
+  const [subcommand, ...rest] = args;
+  try {
+    if (subcommand === "add") {
+      const newText = rest.join(" ").trim();
+      if (!newText) failCli("用法: mori profile add <文本>");
+      runMemoryCli((memory) => {
+        memory.updateProfile({
+          operation: "add",
+          new_text: newText,
+          reason: "manual_cli",
+        });
+      });
+      console.log("身份画像已添加");
+      return;
+    }
+
+    if (subcommand === "remove") {
+      const oldText = rest.join(" ").trim();
+      if (!oldText) failCli("用法: mori profile remove <文本>");
+      runMemoryCli((memory) => {
+        memory.updateProfile({
+          operation: "remove",
+          old_text: oldText,
+          reason: "manual_cli",
+        });
+      });
+      console.log("身份画像已删除");
+      return;
+    }
+
+    if (subcommand === "replace") {
+      const delimiter = rest.indexOf("--");
+      if (delimiter < 0) failCli("用法: mori profile replace <旧文本> -- <新文本>");
+      const oldText = rest.slice(0, delimiter).join(" ").trim();
+      const newText = rest.slice(delimiter + 1).join(" ").trim();
+      if (!oldText || !newText) failCli("用法: mori profile replace <旧文本> -- <新文本>");
+      runMemoryCli((memory) => {
+        memory.updateProfile({
+          operation: "replace",
+          old_text: oldText,
+          new_text: newText,
+          reason: "manual_cli",
+        });
+      });
+      console.log("身份画像已替换");
+      return;
+    }
+
+    failCli("用法: mori profile add <文本> | mori profile remove <文本> | mori profile replace <旧文本> -- <新文本>");
+  } catch (err) {
+    failCli(`身份画像修改失败：${formatCliError(err)}`);
+  }
+}
+
+function runStorylineCli(args: string[]): void {
+  const [subcommand, id] = args;
+  if ((subcommand !== "close" && subcommand !== "reopen") || !id) {
+    failCli("用法: mori storyline close <id> | mori storyline reopen <id>");
+  }
+
+  try {
+    runMemoryCli((memory) => {
+      memory.setStorylineStatus({
+        id,
+        status: subcommand === "close" ? "closed" : "active",
+        reason: "manual_cli",
+      });
+    });
+    console.log(subcommand === "close" ? "Storyline 已关闭" : "Storyline 已重新激活");
+  } catch (err) {
+    failCli(`Storyline 修改失败：${formatCliError(err)}`);
+  }
+}
 
 const command = process.argv[2] ?? "run";
 switch (command) {
@@ -302,6 +187,12 @@ switch (command) {
   case "status":
     showStatus();
     break;
+  case "profile":
+    runProfileCli(process.argv.slice(3));
+    break;
+  case "storyline":
+    runStorylineCli(process.argv.slice(3));
+    break;
   case "run":
     runForeground().catch((err) => {
       bootLog.error("启动失败:", err);
@@ -309,6 +200,6 @@ switch (command) {
     });
     break;
   default:
-    bootLog.error(`未知命令: ${command}（可用: run | start | stop | status | help | version）`);
+    bootLog.error(`未知命令: ${command}（可用: run | start | stop | status | profile | storyline | help | version）`);
     process.exit(1);
 }

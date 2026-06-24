@@ -4,8 +4,14 @@ import { ChatRegistry } from "./chatRegistry.js";
 import type { HarnessManager } from "../agent/harness.js";
 import { larkConversationId } from "./ingest.js";
 import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
-import { renderInfoCard, renderProfileHistoryCard } from "./cards.js";
-import type { DailyMemoryRun } from "../memory/service.js";
+import {
+  renderChapterHistoryCard,
+  renderDailyMemoryRunsCard,
+  renderInfoCard,
+  renderProfileHistoryCard,
+  renderStorylineCard,
+  renderStorylinesCard,
+} from "./cards.js";
 import { parseLens } from "./lenses.js";
 import { loadAppVersion } from "../config.js";
 
@@ -22,9 +28,7 @@ interface CommandResult {
 }
 
 function helpText(): string {
-  return `/help - 查看命令列表
-当前版本号：${loadAppVersion()}
-/think <内容> - 顺着为什么往下钻；也可回复一条消息使用
+  return `/think <内容> - 顺着为什么往下钻；也可回复一条消息使用
 /rank <内容> - 把一个领域砍到两三根生成器；也可回复一条消息使用
 /plain <内容> - 用大白话讲到能复述；也可回复一条消息使用
 /new-diary-group - 创建一个日记群
@@ -33,14 +37,12 @@ function helpText(): string {
 /compact - 压缩当前会话上下文
 /profile - 查看身份画像
 /profile history - 查看画像变更历史
-/profile add <new_text> - 添加身份画像
-/profile remove <old_text> - 删除身份画像中的唯一子串
-/profile replace <old_text> => <new_text> - 替换身份画像中的唯一子串
+/chapter - 查看当前主线
+/chapter history - 查看当前主线变更历史
 /storylines - 查看 active + recent dormant 叙事线
 /storyline <id> - 查看单条叙事线详情
-/storyline close <id> - 手动软关闭叙事线
-/storyline reopen <id> - 手动重新激活叙事线
-/dream - 查看最近 daily_memory runs
+/dream - 查看最近 7 天里有变更的 daily_memory runs
+/dream <天数> - 查看最近 N 天里有变更的 daily_memory runs
 /dream YYYY-MM-DD - 查看某天 daily_memory 详情
 /schedules - 查看定时任务配置
 /consolidate - 手动触发周度合并`;
@@ -69,14 +71,14 @@ export async function handleCommand(
       return handleCompact(msg, ctx);
     case "/profile":
       return handleProfile(msg, ctx);
+    case "/chapter":
+      return handleChapter(msg, ctx, args);
     case "/storylines":
       return handleStorylines(msg, ctx);
     case "/storyline":
       return handleStoryline(msg, ctx, args);
     case "/dream":
       return handleDream(msg, ctx, args);
-    case "/working":
-      return handleWorking(msg, ctx);
     case "/schedules":
       return handleSchedules(msg, ctx);
     case "/consolidate":
@@ -93,7 +95,8 @@ async function handleHelp(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.channel.send(msg.chatId, { card: renderInfoCard("命令列表", helpText()) });
+  const title = `命令列表 v${loadAppVersion()}`;
+  await ctx.channel.send(msg.chatId, { card: renderInfoCard(title, helpText()) });
   return { handled: true };
 }
 
@@ -168,69 +171,15 @@ async function handleProfile(
   }
 
   if (rest === "history") {
-    const rows = ctx.db
-      .prepare(
-        `SELECT old_content, new_content, reason, created_at
-         FROM profile_revisions
-         ORDER BY created_at DESC
-         LIMIT 10`,
-      )
-      .all() as Array<{
-      old_content: string | null;
-      new_content: string;
-      reason: string;
-      created_at: string;
-    }>;
     await ctx.channel.send(msg.chatId, {
-      card: renderProfileHistoryCard(rows),
+      card: renderProfileHistoryCard(memory.getProfileRevisions(10)),
     });
     return { handled: true };
   }
 
-  try {
-    if (rest.startsWith("add ")) {
-      const newText = rest.slice("add ".length).trim();
-      if (!newText) return sendProfileUsage(msg, ctx);
-      memory.updateProfile({
-        operation: "add",
-        new_text: newText,
-        reason: "manual_correction",
-      });
-      await ctx.channel.send(msg.chatId, { text: "✅ 身份画像已添加" });
-      return { handled: true };
-    }
-
-    if (rest.startsWith("remove ")) {
-      const oldText = rest.slice("remove ".length).trim();
-      if (!oldText) return sendProfileUsage(msg, ctx);
-      memory.updateProfile({
-        operation: "remove",
-        old_text: oldText,
-        reason: "manual_correction",
-      });
-      await ctx.channel.send(msg.chatId, { text: "✅ 身份画像已删除" });
-      return { handled: true };
-    }
-
-    if (rest.startsWith("replace ")) {
-      const payload = rest.slice("replace ".length).trim();
-      const delimiter = payload.indexOf("=>");
-      if (delimiter < 0) return sendProfileUsage(msg, ctx);
-      const oldText = payload.slice(0, delimiter).trim();
-      const newText = payload.slice(delimiter + "=>".length).trim();
-      if (!oldText || !newText) return sendProfileUsage(msg, ctx);
-      memory.updateProfile({
-        operation: "replace",
-        old_text: oldText,
-        new_text: newText,
-        reason: "manual_correction",
-      });
-      await ctx.channel.send(msg.chatId, { text: "✅ 身份画像已替换" });
-      return { handled: true };
-    }
-  } catch (err) {
+  if (rest.startsWith("add ") || rest.startsWith("remove ") || rest.startsWith("replace ")) {
     await ctx.channel.send(msg.chatId, {
-      text: `画像修改失败：${formatCommandError(err)}`,
+      text: "飞书命令只支持查看。修改身份画像请用 CLI：mori profile add/remove/replace。",
     });
     return { handled: true };
   }
@@ -238,26 +187,41 @@ async function handleProfile(
   return sendProfileUsage(msg, ctx);
 }
 
+async function handleChapter(
+  msg: NormalizedMessage,
+  ctx: CommandContext,
+  args: string[],
+): Promise<CommandResult> {
+  const memory = ctx.harnessManager.getMemoryService();
+  memory.syncEditableMemoryFiles();
+
+  if (args.length === 0) {
+    const chapter = memory.getChapter().trim() || "（尚未建立当前主线）";
+    await ctx.channel.send(msg.chatId, {
+      card: renderInfoCard("🧭 当前主线", chapter),
+    });
+    return { handled: true };
+  }
+
+  if (args.length === 1 && args[0] === "history") {
+    await ctx.channel.send(msg.chatId, {
+      card: renderChapterHistoryCard(memory.getChapterRevisions(10)),
+    });
+    return { handled: true };
+  }
+
+  await ctx.channel.send(msg.chatId, {
+    text: "用法：/chapter | /chapter history",
+  });
+  return { handled: true };
+}
+
 async function sendProfileUsage(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
   await ctx.channel.send(msg.chatId, {
-    text: "用法：/profile | /profile history | /profile add <new_text> | /profile remove <old_text> | /profile replace <old_text> => <new_text>",
-  });
-  return { handled: true };
-}
-
-function formatCommandError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-async function handleWorking(
-  msg: NormalizedMessage,
-  ctx: CommandContext,
-): Promise<CommandResult> {
-  await ctx.channel.send(msg.chatId, {
-    text: "工作集已由 storylines 取代。使用 /storylines 查看当前叙事线。",
+    text: "用法：/profile | /profile history",
   });
   return { handled: true };
 }
@@ -271,18 +235,7 @@ async function handleStorylines(
     await ctx.channel.send(msg.chatId, { text: "暂无 storylines" });
     return { handled: true };
   }
-  const text = items
-    .map((item) => {
-      const status = item.status === "active" ? "🟢" : item.status === "dormant" ? "💤" : "✅";
-      return [
-        `${status} **${item.title}**（${item.kind}）`,
-        `ID: \`${item.id}\` · last_active_at: ${item.last_active_at}`,
-        item.summary,
-        item.current_tension ? `当前张力：${item.current_tension}` : "",
-      ].filter(Boolean).join("\n");
-    })
-    .join("\n\n");
-  await ctx.channel.send(msg.chatId, { card: renderInfoCard("📋 Storylines", text) });
+  await ctx.channel.send(msg.chatId, { card: renderStorylinesCard(items) });
   return { handled: true };
 }
 
@@ -292,25 +245,13 @@ async function handleStoryline(
   args: string[],
 ): Promise<CommandResult> {
   const memory = ctx.harnessManager.getMemoryService();
-  const [first, second] = args;
+  const [first] = args;
   if (!first) return sendStorylineUsage(msg, ctx);
 
   if (first === "close" || first === "reopen") {
-    if (!second) return sendStorylineUsage(msg, ctx);
-    try {
-      memory.setStorylineStatus({
-        id: second,
-        status: first === "close" ? "closed" : "active",
-        reason: "manual_correction",
-      });
-      await ctx.channel.send(msg.chatId, {
-        text: first === "close" ? "✅ Storyline 已关闭" : "✅ Storyline 已重新激活",
-      });
-    } catch (err) {
-      await ctx.channel.send(msg.chatId, {
-        text: `Storyline 修改失败：${formatCommandError(err)}`,
-      });
-    }
+    await ctx.channel.send(msg.chatId, {
+      text: "飞书命令只支持查看。修改 storyline 状态请用 CLI：mori storyline close/reopen <id>。",
+    });
     return { handled: true };
   }
 
@@ -320,23 +261,7 @@ async function handleStoryline(
     return { handled: true };
   }
   const revisions = memory.getStorylineRevisions(first);
-  const body = [
-    `**${item.title}**（${item.kind} / ${item.status}）`,
-    `ID: \`${item.id}\``,
-    `last_active_at: ${item.last_active_at}`,
-    "",
-    item.summary,
-    item.current_tension ? `\n**当前张力**\n${item.current_tension}` : "",
-    item.emotional_arc ? `\n**情绪/态度弧线**\n${item.emotional_arc}` : "",
-    item.people.length ? `\n**相关人**\n${item.people.join("、")}` : "",
-    item.evidence_episode_ids.length
-      ? `\n**证据 episodes**\n${item.evidence_episode_ids.map((id) => `- ${id}`).join("\n")}`
-      : "",
-    revisions.length
-      ? `\n**最近 revisions**\n${revisions.map((r) => `- ${r.created_at} · ${r.operation} · ${r.reason}`).join("\n")}`
-      : "",
-  ].filter(Boolean).join("\n");
-  await ctx.channel.send(msg.chatId, { card: renderInfoCard("📋 Storyline", body) });
+  await ctx.channel.send(msg.chatId, { card: renderStorylineCard(item, revisions) });
   return { handled: true };
 }
 
@@ -345,7 +270,7 @@ async function sendStorylineUsage(
   ctx: CommandContext,
 ): Promise<CommandResult> {
   await ctx.channel.send(msg.chatId, {
-    text: "用法：/storyline <id> | /storyline close <id> | /storyline reopen <id>",
+    text: "用法：/storyline <id>",
   });
   return { handled: true };
 }
@@ -356,53 +281,34 @@ async function handleDream(
   args: string[],
 ): Promise<CommandResult> {
   const memory = ctx.harnessManager.getMemoryService();
-  const dateKey = args[0];
-  if (dateKey) {
-    const run = memory.getDailyMemoryRun(dateKey);
+  const input = args[0];
+  if (input && /^\d{4}-\d{2}-\d{2}$/.test(input)) {
+    const run = memory.getDailyMemoryRun(input);
     if (!run) {
-      await ctx.channel.send(msg.chatId, { text: `没有 ${dateKey} 的 daily_memory 记录` });
+      await ctx.channel.send(msg.chatId, { text: `没有 ${input} 的 daily_memory 记录` });
       return { handled: true };
     }
     await ctx.channel.send(msg.chatId, {
-      card: renderInfoCard("🌙 Daily Memory", formatDailyRun(run, true)),
+      card: renderDailyMemoryRunsCard([run], { expanded: true }),
     });
     return { handled: true };
   }
 
-  const runs = memory.getRecentDailyMemoryRuns(7);
-  if (runs.length === 0) {
-    await ctx.channel.send(msg.chatId, { text: "暂无 daily_memory 记录" });
+  const days = input ? Number(input) : 7;
+  if (!Number.isInteger(days) || days <= 0) {
+    await ctx.channel.send(msg.chatId, { text: "用法：/dream | /dream <天数> | /dream YYYY-MM-DD" });
     return { handled: true };
   }
-  await ctx.channel.send(msg.chatId, {
-    card: renderInfoCard(
-      "🌙 Daily Memory",
-      runs.map((run) => formatDailyRun(run, false)).join("\n\n---\n\n"),
-    ),
-  });
-  return { handled: true };
-}
-
-function formatDailyRun(
-  run: DailyMemoryRun,
-  verbose: boolean,
-): string {
-  const lines = [
-    `**${run.date_key}** · ${run.status}`,
-    `episodes: ${run.input_episode_ids.length} · storyline_changes: ${run.storyline_changes.length} · nudge: ${run.nudge_sent ? "sent" : run.nudge_evaluated ? "evaluated" : "none"}`,
-  ];
-  if (run.dream_summary) lines.push(`dream: ${run.dream_summary}`);
-  if (run.nudge_text) lines.push(`nudge: ${run.nudge_text}`);
-  if (run.error) lines.push(`error: ${run.error}`);
-  if (verbose && run.storyline_changes.length) {
-    lines.push(
-      "storyline changes:\n" +
-        run.storyline_changes
-          .map((c) => `- ${c.operation} ${c.title} → ${c.status}（${c.reason}）`)
-          .join("\n"),
-    );
+  const runs = memory.getRecentDailyMemoryRuns(days)
+    .filter((run) => run.storyline_changes.length > 0 || run.nudge_evaluated || run.error);
+  if (runs.length === 0) {
+    await ctx.channel.send(msg.chatId, { text: `最近 ${days} 天暂无 storyline changes` });
+  } else {
+    await ctx.channel.send(msg.chatId, {
+      card: renderDailyMemoryRunsCard(runs, { expandedIndex: 0 }),
+    });
   }
-  return lines.join("\n");
+  return { handled: true };
 }
 
 async function handleSchedules(
@@ -417,6 +323,7 @@ async function handleSchedules(
 }
 
 export function renderSchedulesCard(config: SchedulesConfig): object {
+  const actionNonce = Date.now().toString(36);
   const elements: object[] = [
     { tag: "markdown", content: "**定时任务**" },
   ];
@@ -429,25 +336,16 @@ export function renderSchedulesCard(config: SchedulesConfig): object {
         ? JSON.stringify(schedule.trigger)
         : "manual";
     elements.push({
+      tag: "markdown",
+      content: `**${schedule.name}** \`${schedule.id}\`\n${schedule.kind} · ${trigger}\n状态：${status}`,
+    });
+    elements.push({
       tag: "column_set",
       flex_mode: "none",
-      background_style: "default",
       columns: [
         {
           tag: "column",
-          width: "weighted",
-          weight: 3,
-          elements: [
-            {
-              tag: "markdown",
-              content: `**${schedule.name}** \`${schedule.id}\`\n${schedule.kind} · ${trigger}\n状态：${status}`,
-            },
-          ],
-        },
-        {
-          tag: "column",
-          width: "weighted",
-          weight: 1,
+          width: "auto",
           elements: [
             {
               tag: "button",
@@ -456,13 +354,40 @@ export function renderSchedulesCard(config: SchedulesConfig): object {
                 content: schedule.enabled ? "停用" : "启用",
               },
               type: schedule.enabled ? "default" : "primary",
-              width: "fill",
+              width: "default",
               behaviors: [
                 {
                   type: "callback",
                   value: {
                     action: "toggle_schedule",
                     schedule_id: schedule.id,
+                    enabled: !schedule.enabled,
+                    nonce: actionNonce,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          tag: "column",
+          width: "auto",
+          elements: [
+            {
+              tag: "button",
+              text: {
+                tag: "plain_text",
+                content: "立刻运行",
+              },
+              type: "default",
+              width: "default",
+              behaviors: [
+                {
+                  type: "callback",
+                  value: {
+                    action: "run_schedule",
+                    schedule_id: schedule.id,
+                    nonce: actionNonce,
                   },
                 },
               ],

@@ -63,6 +63,15 @@ mori status   # 查看状态与日志路径
 | `/dream` | 查看最近 daily_memory runs |
 | `/schedules` | 查看和开关定时任务 |
 
+## 运维技能（任意 agent 可用）
+
+`.claude/skills/` 下放了两个**与具体 agent 无关**的 skill，用自然语言就能让 agent 代办 mori 的安装、升级和定时任务接入。SKILL.md 是开放的纯文本格式，任何支持 skills 的 agent（Claude Code、Codex、Cursor、OpenCode 等）都能加载；即便你的 agent 不支持 skills，每个 skill 的 `scripts/` 都是可直接运行的纯 Node/bash 脚本（零额外依赖），手动 `node .claude/skills/<技能>/scripts/<脚本>.mjs` 也能跑。
+
+| 技能 | 能做什么 | 触发示例 |
+|---|---|---|
+| `deploy-mori` | 安装 / 升级 / 体检 mori：全新安装（装依赖 + 全局 link + 引导飞书扫码）、源码升级（`git pull` → 必要时重建 → 迁移 `setting.json` → 按需重启）、配置体检（文件 / key / 飞书 & LLM 真实连通测试）。 | 「帮我把 mori 装起来」「升级到最新版」「检查配置对不对」 |
+| `add-script-schedule` | 新增一个 script 定时任务：写抓取脚本 → 本地 mock/真实测试 → 复制进 `~/.mori/` 并幂等合并 `schedules.json` → 探测守护进程状态（未安装/未运行/运行中）后分头处理。覆盖「定时抓外部源 → 生成知识文章 → 投递 Inbox/飞书」全链路。 | 「加个定时任务，每天 9 点抓 xxx 接口投喂」 |
+
 ## 文档
 
 - [文档总览](docs/index.md) —— 当前功能文档入口和覆盖矩阵

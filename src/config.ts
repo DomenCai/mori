@@ -204,7 +204,7 @@ const ROOT = isDev ? join(process.cwd(), "data") : join(homedir(), ".mori");
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // 生产读构建时冻结在 dist/build-info.json 的产物信息；dev 下 fallback 到源码 package.json。
-// 不缓存：update.js 会在自身生命周期内 build 出新 dist，需读到 build 后的新值。
+// 不缓存：update.mjs 会在自身生命周期内 build 出新 dist，需读到 build 后的新值。
 export function loadBuildInfo(): BuildInfo {
   const localBuildInfo = join(dirname(fileURLToPath(import.meta.url)), "build-info.json");
   if (existsSync(localBuildInfo)) {

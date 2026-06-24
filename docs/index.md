@@ -25,8 +25,8 @@
 | 飞书扫码注册、创建日记群 | CLI 首次运行、`/new-diary-group` | [CLI 使用指南](cli.md)、[飞书命令](commands.md) |
 | 日记群写 episode、流式回复 | 日记群根消息 | [记忆模型](memory-model.md)、[会话与冷却规则](sessions.md) |
 | DM / topic / thread 普通对话 | 私聊、`/new-chat`、飞书话题回复 | [会话与冷却规则](sessions.md)、[知识库](knowledge-base.md) |
-| 身份画像查看和手动纠错 | `/profile` 系列命令 | [飞书命令](commands.md)、[记忆模型](memory-model.md) |
-| Storylines 查看和手动开关 | `/storylines`、`/storyline` | [飞书命令](commands.md)、[记忆模型](memory-model.md) |
+| 身份画像查看和手动纠错 | 飞书 `/profile` 查看；CLI 修改 | [飞书命令](commands.md)、[CLI 使用指南](cli.md)、[记忆模型](memory-model.md) |
+| Storylines 查看和手动开关 | 飞书 `/storylines`、`/storyline` 查看；CLI 开关 | [飞书命令](commands.md)、[CLI 使用指南](cli.md)、[记忆模型](memory-model.md) |
 | Daily memory 审计查看 | `/dream` | [飞书命令](commands.md)、[定时任务](schedules.md) |
 | 周度合并 | 定时任务、`/consolidate` | [定时任务](schedules.md)、[记忆模型](memory-model.md) |
 | 知识收藏与检索 | 自然语言收藏 URL、知识工具、通知群反应 | [知识库](knowledge-base.md) |
