@@ -1,6 +1,6 @@
 {
   "name": "mori",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "description": "飞书优先的对话型个人思想伙伴，基于 pi-agent-core",
   "bin": {

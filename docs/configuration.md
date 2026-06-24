@@ -103,7 +103,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 - `providers.<name>.request.cacheRetention` 会作为 harness stream option 生效。
 - `models` 是模型事实表：`name`、`input`、`reasoning`、`contextWindow`、`maxTokens`，`cost` 可选，缺省按 0 合成。
 - `model_profiles` 是语义档位（`normal` / `strong`），只配 `provider` 和 `model`，是"强模型到底是哪个"的唯一真源；换强模型只改这一处。
-- `chat_types` 直接按 chatType 映射到档位名：`dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`knowledge_index`。**未列出的 chatType 自动走 `normal`**。
+- `chat_types` 直接按 chatType 映射到档位名：`dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`knowledge_index`、`schedule`。**未列出的 chatType 自动走 `normal`**。
 
 启动时会把 `model_profiles` 里每个档位都解析一次（provider、model、key 都要存在），chatType→档位的分派由 `chat_types` 决定。
 

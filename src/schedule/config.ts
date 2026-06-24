@@ -8,7 +8,7 @@ export interface SchedulesConfig {
   schedules: ScheduleDefinition[];
 }
 
-export type ScheduleDefinition = BuiltinSchedule | ScriptSchedule;
+export type ScheduleDefinition = BuiltinSchedule | ScriptSchedule | AgentSchedule;
 
 export interface BaseSchedule {
   id: string;
@@ -28,10 +28,23 @@ export interface ScriptSchedule extends BaseSchedule {
   script: string;
   cron: string;
   runtime?: Partial<ScriptRuntimeConfig>;
-  deliver: {
-    notify: boolean;
-    inbox: string;
-  };
+  deliver?: ScheduleDeliver;
+}
+
+export interface AgentSchedule extends BaseSchedule {
+  kind: "agent";
+  cron: string;
+  prompt?: string;
+  script?: string;
+  system?: "bare" | "mori" | string;
+  tools?: string[];
+  runtime?: Partial<ScriptRuntimeConfig>;
+  deliver?: ScheduleDeliver;
+}
+
+export interface ScheduleDeliver {
+  notify?: boolean;
+  inbox?: string;
 }
 
 export interface KnowledgeIndexTrigger {
@@ -70,7 +83,7 @@ const BUILTIN_DEFAULTS: BuiltinSchedule[] = [
 ];
 
 // schedules.json 里的条目是“覆盖”，只需带 id + 想改的字段（如只改某 builtin 的 cron）。
-type ScheduleOverride = { id: string; kind?: "builtin" | "script" } & Record<
+type ScheduleOverride = { id: string; kind?: "builtin" | "script" | "agent" } & Record<
   string,
   unknown
 >;
@@ -93,8 +106,8 @@ export function loadSchedulesConfig(): SchedulesConfig {
     if (index >= 0) {
       // 命中基线（或已加入的 script）：只覆盖 JSON 写了的字段，其余保留默认。
       schedules[index] = { ...schedules[index], ...override } as ScheduleDefinition;
-    } else if (override.kind === "script") {
-      // 代码不认识的 script：JSON 是它唯一来源，原样保留。
+    } else if (override.kind === "script" || override.kind === "agent") {
+      // 代码不认识的用户任务：JSON 是它唯一来源，原样保留。
       schedules.push(override as unknown as ScheduleDefinition);
     }
     // 命中不到的 builtin（已被代码下线）：忽略。

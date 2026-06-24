@@ -77,6 +77,14 @@ export interface HarnessManagerOptions {
   clock?: Clock;
 }
 
+export type TaskSystemPrompt = "bare" | "mori" | string;
+export type TaskTool = string | AgentTool<any>;
+
+export interface RunTaskOptions {
+  system?: TaskSystemPrompt;
+  tools?: TaskTool[];
+}
+
 export class HarnessManager {
   private entries = new Map<string, HarnessEntry>();
   private env: NodeExecutionEnv;
@@ -134,7 +142,12 @@ export class HarnessManager {
   async getOrCreate(
     scopeId: string,
     chatType: HarnessEntry["chatType"],
-    opts: { runId?: string; activeToolNames?: string[] } = {},
+    opts: {
+      runId?: string;
+      activeToolNames?: string[];
+      extraTools?: AgentTool<any>[];
+      systemPrompt?: string;
+    } = {},
   ): Promise<HarnessEntry> {
     const existing = this.entries.get(scopeId);
     if (existing) {
@@ -296,10 +309,54 @@ ${JSON.stringify(files, null, 2)}
     }
   }
 
+  async runTask(prompt: string, opts: RunTaskOptions = {}): Promise<string> {
+    const runId = genId("run");
+    const scopeId = `schedule_${runId}`;
+    const tools = opts.tools ?? [];
+    const customTools = tools.filter(isAgentTool);
+    for (const tool of customTools) {
+      if (typeof tool.name !== "string" || !tool.name.trim()) {
+        throw new Error("自定义工具缺少 name");
+      }
+      if (typeof tool.execute !== "function") {
+        throw new Error(`自定义工具缺少 execute：${tool.name}`);
+      }
+    }
+    const activeToolNames = tools.map((tool) =>
+      typeof tool === "string" ? tool : tool.name,
+    );
+    const entry = await this.getOrCreate(scopeId, "schedule", {
+      runId,
+      activeToolNames,
+      extraTools: customTools,
+      systemPrompt: this.resolveTaskSystemPrompt(opts.system ?? "bare"),
+    });
+
+    let text = "";
+    const unsubscribe = entry.harness.subscribe(async (event) => {
+      if (event.type === "turn_end" && !assistantMessageHasToolCall(event.message)) {
+        text = assistantMessageText(event.message);
+      }
+    });
+
+    try {
+      await entry.harness.prompt(prompt);
+      return text.trim();
+    } finally {
+      unsubscribe();
+      await this.resetSession(scopeId);
+    }
+  }
+
   private async createEntry(
     scopeId: string,
     chatType: HarnessEntry["chatType"],
-    opts: { runId?: string; activeToolNames?: string[] },
+    opts: {
+      runId?: string;
+      activeToolNames?: string[];
+      extraTools?: AgentTool<any>[];
+      systemPrompt?: string;
+    },
   ): Promise<HarnessEntry> {
     const session = await this.repo.create({
       cwd: `${chatType}/${businessDateKey().slice(0, 7)}`,
@@ -315,7 +372,7 @@ ${JSON.stringify(files, null, 2)}
     const canEditProfile = isConsolidation;
     this.memoryService.syncEditableMemoryFiles();
     const snapshot = buildMemorySnapshot(this.db, this.memoryService);
-    const systemPrompt = appendSessionInstructions(
+    const systemPrompt = opts.systemPrompt ?? appendSessionInstructions(
       buildSystemPrompt(snapshot),
       chatType,
     );
@@ -348,7 +405,20 @@ ${JSON.stringify(files, null, 2)}
       allTools.push(createSetChapterTool(this.memoryService, () => entry.runId));
     }
 
+    for (const tool of opts.extraTools ?? []) {
+      if (allTools.some((existing) => existing.name === tool.name)) {
+        throw new Error(`自定义工具名与内置工具冲突：${tool.name}`);
+      }
+      allTools.push(tool);
+    }
+
     const activeToolNames = opts.activeToolNames ?? activeToolNamesFor(chatType);
+    const unknownToolNames = activeToolNames.filter(
+      (name) => !allTools.some((tool) => tool.name === name),
+    );
+    if (unknownToolNames.length > 0) {
+      throw new Error(`未知工具：${unknownToolNames.join(", ")}`);
+    }
 
     const harness = new AgentHarness({
       env: this.env,
@@ -378,6 +448,19 @@ ${JSON.stringify(files, null, 2)}
 
     this.entries.set(scopeId, entry);
     return entry;
+  }
+
+  private resolveTaskSystemPrompt(system: TaskSystemPrompt): string {
+    if (system === "bare") {
+      return `你是一个定时任务 Agent。按任务要求完成工作，输出可以直接发送给用户的 Markdown 正文。
+不要编造工具结果；如果任务要求通过工具提交结构化选择，必须调用对应工具。`;
+    }
+    if (system === "mori") {
+      this.memoryService.syncEditableMemoryFiles();
+      const snapshot = buildMemorySnapshot(this.db, this.memoryService);
+      return appendSessionInstructions(buildSystemPrompt(snapshot), "schedule");
+    }
+    return system;
   }
 
   private installSessionFileNames(): void {
@@ -410,6 +493,32 @@ ${JSON.stringify(files, null, 2)}
     };
   }
 
+}
+
+function isAgentTool(tool: TaskTool): tool is AgentTool<any> {
+  return typeof tool === "object" && tool !== null;
+}
+
+function assistantMessageHasToolCall(message: unknown): boolean {
+  const content = (message as { content?: unknown } | null)?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((item) => {
+    const record = item as Record<string, unknown>;
+    return record?.type === "toolCall";
+  });
+}
+
+function assistantMessageText(message: unknown): string {
+  const content = (message as { content?: unknown } | null)?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((item) => {
+      const record = item as Record<string, unknown>;
+      return record?.type === "text" && typeof record.text === "string"
+        ? record.text
+        : "";
+    })
+    .join("");
 }
 
 function appendSessionInstructions(
@@ -472,6 +581,9 @@ function activeToolNamesFor(chatType: HarnessEntry["chatType"]): string[] {
     return ["read_vault"];
   }
   if (chatType === "daily_memory") {
+    return [];
+  }
+  if (chatType === "schedule") {
     return [];
   }
   // 普通对话不写 episode（蒸馏交给独立 distill agent），所以工具集里不含 write_episode。

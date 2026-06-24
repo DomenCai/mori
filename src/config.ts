@@ -55,7 +55,8 @@ export type AgentChatType =
   | "distill"
   | "consolidation"
   | "knowledge_index"
-  | "daily_memory";
+  | "daily_memory"
+  | "schedule";
 
 /** 没有为某个 chatType 配置档位时使用的默认档位。 */
 export const DEFAULT_PROFILE = "normal";
