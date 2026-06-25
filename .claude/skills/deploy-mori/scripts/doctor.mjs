@@ -3,6 +3,7 @@
 // 用法：
 //   node doctor.mjs                  仅本地检查（不联网、不花 token）
 //   node doctor.mjs --connectivity   额外做飞书 tenant_access_token + LLM 最小请求连通测试
+//                                    （anthropic-messages / openai-completions / openai-responses 三种 api 都覆盖）
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -168,19 +169,34 @@ if (LIVE) {
         continue;
       }
       const model = Object.keys(prov.models ?? {})[0];
-      if (prov.api === "anthropic-messages") {
-        try {
-          const r = await fetch(prov.baseUrl.replace(/\/$/, "") + "/v1/messages", {
+      const base = prov.baseUrl.replace(/\/$/, "");
+      try {
+        let r;
+        if (prov.api === "anthropic-messages") {
+          r = await fetch(base + "/v1/messages", {
             method: "POST",
             headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
             body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
           });
-          line(r.ok ? "ok" : "bad", r.ok ? `${name} (${model}) 连通` : `${name}: HTTP ${r.status} ${(await r.text()).slice(0, 160)}`);
-        } catch (e) {
-          line("bad", `${name}: ${e.message}`);
+        } else if (prov.api === "openai-completions") {
+          r = await fetch(base + "/chat/completions", {
+            method: "POST",
+            headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+            body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
+          });
+        } else if (prov.api === "openai-responses") {
+          r = await fetch(base + "/responses", {
+            method: "POST",
+            headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+            body: JSON.stringify({ model, input: "hi", max_output_tokens: 16 }),
+          });
+        } else {
+          line("skip", `${name}: api=${prov.api}，未内置自动测试，请手动确认 baseUrl/key`);
+          continue;
         }
-      } else {
-        line("skip", `${name}: api=${prov.api}，未内置自动测试，请手动确认 baseUrl/key`);
+        line(r.ok ? "ok" : "bad", r.ok ? `${name} (${model}) 连通` : `${name}: HTTP ${r.status} ${(await r.text()).slice(0, 160)}`);
+      } catch (e) {
+        line("bad", `${name}: ${e.message}`);
       }
     }
   } else {

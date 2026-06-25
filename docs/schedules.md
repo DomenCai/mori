@@ -63,7 +63,8 @@ type ScheduleResult =
 - `string`：等价于 `{ body: string }`。
 - 无 `deliver.inbox`：只要求 `body`，标题默认用 schedule name。
 - 有 `deliver.inbox`：必须返回完整文章字段 `title/domain/brief/body`。
-- `deliver.notify:true`：推送飞书通知群。
+- `deliver.notify:true`：推送飞书通知群；默认使用 `mori 通知`，首次投递会自动建群。
+- `deliver.notifyChat`：可选通知群名称；配置后按该名称在 notification 群绑定里查找，找不到就新建同名通知群。不配置时走默认通知群，默认群用本地 `isDefault` 标记识别，不依赖群名。
 - 既无 `inbox` 又不 notify：允许静默运行。
 
 ## Script 任务
@@ -80,7 +81,7 @@ script 任务用于纯脚本抓取和整理。脚本放在 `scriptDir` 下：生
       "script": "ai-daily.mjs",
       "cron": "0 9 * * *",
       "enabled": true,
-      "deliver": { "notify": true }
+      "deliver": { "notify": true, "notifyChat": "AI 日报" }
     }
   ]
 }
@@ -111,6 +112,7 @@ inline agent 用于简单提醒或简单定时问答：
       "name": "日记提醒",
       "kind": "agent",
       "prompt": "根据最近记忆，提醒我今天可以记录什么日记。",
+      "profile": "normal",
       "system": "mori",
       "tools": ["search_memory"],
       "cron": "0 22 * * *",
@@ -121,6 +123,7 @@ inline agent 用于简单提醒或简单定时问答：
 }
 ```
 
+- `profile` 可选，填 `setting.llm.model_profiles` 里的档位名，例如 `"normal"` / `"strong"`；不填或档位不存在时回退 `"normal"`。
 - `system` 默认 `"bare"`；`"mori"` 会注入 mori 的用户信息/记忆 system prompt；也可以填自定义 system prompt。
 - `tools` 只能写内置工具名，不传即不开工具。
 - inline prompt 不允许写入 Inbox；配置 `deliver.inbox` 会报错。
@@ -138,8 +141,9 @@ inline agent 用于简单提醒或简单定时问答：
       "name": "AI 精选动态",
       "kind": "agent",
       "script": "aihot-selected-agent.mjs",
+      "profile": "strong",
       "cron": "0 */4 * * *",
-      "deliver": { "notify": true, "inbox": "AI精选" },
+      "deliver": { "notify": true, "notifyChat": "AI 精选", "inbox": "AI精选" },
       "enabled": true
     }
   ]

@@ -13,6 +13,8 @@ mori 的自定义调度有三种形态：
 
 路径随环境切换：开发态读项目内 `./data/`，生产态读 `~/.mori/`。脚本放 `<ROOT>/script/`，调度配置在 `<ROOT>/schedules.json`。
 
+`kind:"agent"` 任务可以配置 `profile`，值是 `setting.llm.model_profiles` 里的档位名，例如 `normal` / `strong`。创建 agent 调度前必须询问用户是否要指定模型档位；用户不指定就不写 `profile`，运行时回退 `normal`。如果用户指定的档位不存在，运行时也会回退 `normal`。
+
 ## 返回值与投递
 
 脚本或 agent task 的最终结果是 `ScheduleResult`：
@@ -73,6 +75,7 @@ export default async function () {
   "name": "日记提醒",
   "kind": "agent",
   "prompt": "根据最近记忆，提醒我今天可以记录什么日记。",
+  "profile": "normal",
   "system": "mori",
   "tools": ["search_memory"],
   "cron": "0 22 * * *",
@@ -97,6 +100,7 @@ export default async function () {
   "name": "AI 精选动态",
   "kind": "agent",
   "script": "aihot-selected-agent.mjs",
+  "profile": "strong",
   "cron": "0 */4 * * *",
   "deliver": { "notify": true, "inbox": "AI精选" },
   "enabled": true
@@ -158,6 +162,7 @@ export default async function ({ Type }) {
 - 脚本写到 `./data/script/`。
 - 写新脚本前先读 `data/script/` 下最接近的参考脚本：纯抓取任务看 `aihot-selected.mjs`，Agent 结构化选择任务看 `aihot-daily-selected-agent.mjs`。
 - 对接外部接口前先确认真实字段名，不按文档臆测。
+- 如果是 `kind:"agent"`，先问用户是否指定模型档位；需要指定时给 helper 传 `--profile <档位名>`。
 - 用 helper 幂等合并配置：
 
 ```bash
@@ -165,10 +170,10 @@ node $SKILL/scripts/merge-schedule.mjs --id <id> --name "<显示名>" \
   --script <name>.mjs --cron "<cron>" --file ./data/schedules.json
 
 node $SKILL/scripts/merge-schedule.mjs --kind agent --id <id> --name "<显示名>" \
-  --prompt "<prompt>" --system mori --tools search_memory --cron "<cron>" --file ./data/schedules.json
+  --prompt "<prompt>" --profile normal --system mori --tools search_memory --cron "<cron>" --file ./data/schedules.json
 
 node $SKILL/scripts/merge-schedule.mjs --kind agent --id <id> --name "<显示名>" \
-  --script <name>.mjs --cron "<cron>" --inbox "<Inbox名>" --file ./data/schedules.json
+  --script <name>.mjs --profile strong --cron "<cron>" --inbox "<Inbox名>" --file ./data/schedules.json
 ```
 
 ### 2. 本地测试
@@ -197,7 +202,7 @@ bash $SKILL/scripts/detect-env.sh <仓库>
 mkdir -p ~/.mori/script
 cp ./data/script/<name>.mjs ~/.mori/script/
 node $SKILL/scripts/merge-schedule.mjs --kind agent --id <id> --name "<显示名>" \
-  --script <name>.mjs --cron "<cron>" --inbox "<Inbox名>"
+  --script <name>.mjs --profile strong --cron "<cron>" --inbox "<Inbox名>"
 $LAUNCH stop && $LAUNCH start
 $LAUNCH status
 ```
@@ -208,5 +213,6 @@ $LAUNCH status
 
 - 没收到卡片：看 `~/.mori/logs/` 当天日志里 `cron` / `script` / `agent` 相关行。
 - agent inline 配了 inbox 会报错，这是设计限制。
+- agent profile 找不到会回退 `normal`；检查 `setting.json` 的 `llm.model_profiles`。
 - 写 Inbox 报缺字段：返回值不是完整文章，补 `title/domain/brief/body`。
 - 未知工具：检查 `tools` 中的内置工具名，或自定义工具 `name` 是否拼错。

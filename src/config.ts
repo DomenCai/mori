@@ -352,6 +352,8 @@ export interface LarkChatBinding {
   chatId: string;
   chatType: LarkChatType;
   name?: string;
+  /** 仅用于 notification：标记默认通知群，按标记而非群名识别（群名可被改）。 */
+  isDefault?: boolean;
   createdAt: string;
 }
 

@@ -70,7 +70,7 @@ mori status   # 查看状态与日志路径
 | 技能 | 能做什么 | 触发示例 |
 |---|---|---|
 | `deploy-mori` | 安装 / 升级 / 体检 mori：全新安装（装依赖 + 全局 link + 引导飞书扫码）、源码升级（`git pull` → 必要时重建 → 迁移 `setting.json` → 按需重启）、配置体检（文件 / key / 飞书 & LLM 真实连通测试）。 | 「帮我把 mori 装起来」「升级到最新版」「检查配置对不对」 |
-| `add-script-schedule` | 新增一个 script 定时任务：写抓取脚本 → 本地 mock/真实测试 → 复制进 `~/.mori/` 并幂等合并 `schedules.json` → 探测守护进程状态（未安装/未运行/运行中）后分头处理。覆盖「定时抓外部源 → 生成知识文章 → 投递 Inbox/飞书」全链路。 | 「加个定时任务，每天 9 点抓 xxx 接口投喂」 |
+| `add-mori-schedule` | 新增一个自定义定时任务：支持纯 script 抓取投递、agent inline prompt 简单提醒、agent task script 结构化选择；可询问并写入 agent 任务使用的模型档位。 | 「加个定时任务，每天 9 点抓 xxx 接口投喂」「加个 agent 调度」 |
 
 ## 文档
 
@@ -78,7 +78,7 @@ mori status   # 查看状态与日志路径
 - [飞书命令](docs/commands.md) —— 群、会话、画像、storylines、定时任务命令
 - [记忆模型](docs/memory-model.md) —— 当前 profile / chapter / storylines / episodes / daily memory 语义
 - [知识库](docs/knowledge-base.md) —— vault、Inbox/Garden、知识反应和知识工具
-- [定时任务](docs/schedules.md) —— builtin、script 投喂和 knowledge index
+- [定时任务](docs/schedules.md) —— builtin、script / agent 投喂和 knowledge index
 - [配置参考](docs/configuration.md) —— runtime root、配置文件、模型路由和提示词位置
 - [会话与冷却规则](docs/sessions.md) —— scope、续聊、新会话、thread/topic 冷却
 - [开发指南](docs/development.md) —— 本地怎么跑、改提示词、看日志、调试

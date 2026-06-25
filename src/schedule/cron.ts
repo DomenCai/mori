@@ -281,6 +281,7 @@ async function runAgentScheduleInner(
       throw new Error(`agent inline prompt 不允许写入 Inbox：${schedule.id}`);
     }
     const text = await harnessManager.runTask(schedule.prompt, {
+      profile: schedule.profile,
       system: schedule.system ?? "bare",
       tools: schedule.tools ?? [],
     });
@@ -290,6 +291,7 @@ async function runAgentScheduleInner(
     const task = await loadAgentTask(schedule.script);
     if (task === null) return null;
     const text = await harnessManager.runTask(task.prompt, {
+      profile: schedule.profile,
       system: task.system ?? "bare",
       tools: task.tools ?? [],
     });
@@ -356,7 +358,11 @@ async function deliverScheduleResult(
   }
 
   if (!shouldNotify) return;
-  const chatId = await ensureNotificationChat(channel, registry);
+  const chatId = await ensureNotificationChat(
+    channel,
+    registry,
+    schedule.deliver?.notifyChat?.trim() || undefined,
+  );
   const sent = await channel.send(chatId, {
     card: knowledgePath
       ? renderKnowledgeCard(output.title, output.body)
@@ -524,24 +530,49 @@ function withTimeout<T>(
   });
 }
 
+const DEFAULT_NOTIFY_CHAT_NAME = "mori 通知";
+
 async function ensureNotificationChat(
   channel: LarkChannel,
   registry: ChatRegistry,
+  name?: string,
 ): Promise<string> {
-  const existing = registry.getNotificationChats()[0];
-  if (existing) return existing;
+  // 配了群名：按名字找命名通知群，没有就新建（非默认）。
+  if (name) {
+    const existing = registry.findNotificationChatByName(name);
+    if (existing) return existing;
+    return createNotificationChat(channel, registry, name, false);
+  }
 
+  // 默认群：按 isDefault 标记识别（群名可被改，不能靠名字）。
+  const def = registry.getDefaultNotificationChat();
+  if (def) return def;
+  // 迁移：旧部署的默认群只有名字没有标记，补上标记复用，避免重复建群。
+  const legacy = registry.findNotificationChatByName(DEFAULT_NOTIFY_CHAT_NAME);
+  if (legacy) {
+    registry.register(legacy, "notification", DEFAULT_NOTIFY_CHAT_NAME, true);
+    return legacy;
+  }
+  return createNotificationChat(channel, registry, DEFAULT_NOTIFY_CHAT_NAME, true);
+}
+
+async function createNotificationChat(
+  channel: LarkChannel,
+  registry: ChatRegistry,
+  name: string,
+  isDefault: boolean,
+): Promise<string> {
   const ownerOpenId = registry.getOwnerOpenId();
   if (!ownerOpenId) {
     throw new Error("无法创建通知群：ownerOpenId 未绑定");
   }
   const { chatId } = await channel.createChat({
-    name: "mori 通知",
+    name,
     description: "mori 定时投喂通知群",
     inviteUserIds: [ownerOpenId],
     userIdType: "open_id",
   });
-  registry.register(chatId, "notification", "mori 通知");
+  registry.register(chatId, "notification", name, isDefault);
   return chatId;
 }
 

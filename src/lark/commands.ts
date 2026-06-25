@@ -335,9 +335,12 @@ export function renderSchedulesCard(config: SchedulesConfig): object {
       : schedule.trigger
         ? JSON.stringify(schedule.trigger)
         : "manual";
+    const profile = schedule.kind === "agent"
+      ? `\n档位：${schedule.profile?.trim() || "normal"}`
+      : "";
     elements.push({
       tag: "markdown",
-      content: `**${schedule.name}** \`${schedule.id}\`\n${schedule.kind} · ${trigger}\n状态：${status}`,
+      content: `**${schedule.name}** \`${schedule.id}\`\n${schedule.kind} · ${trigger}${profile}\n状态：${status}`,
     });
     elements.push({
       tag: "column_set",

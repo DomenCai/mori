@@ -1,19 +1,12 @@
 #!/usr/bin/env node
-// 源码部署自更新：git pull，必要时重新 install/build，进程内补全/迁移 setting.json，并按需重启 daemon。
+// 源码部署自更新：git pull，必要时重新 install/build，并按需重启 daemon。
 // 从 <repo>/.claude/skills/deploy-mori/scripts/ 运行，自动定位仓库根（git toplevel），可在任意 cwd 调用。
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = realpathSync(dirname(fileURLToPath(import.meta.url)));
-const AUTO_SYNC_SETTING_PATHS = ["knowledge.search"];
 const VERSION_PATTERN = /^[0-9]+(\.[0-9]+){1,2}([-+][0-9A-Za-z.-]+)?$/;
 
 function log(message) {
@@ -92,87 +85,6 @@ function isDaemonRunning() {
     allowFailure: true,
   });
   return outputContainsRunning(`${result.out}\n${result.err}`);
-}
-
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function valueAtPath(source, path) {
-  let current = source;
-  for (const key of path.split(".")) {
-    if (!isPlainObject(current) || !(key in current)) return undefined;
-    current = current[key];
-  }
-  return current;
-}
-
-function fillMissingPath(target, source, path) {
-  const sourceValue = valueAtPath(source, path);
-  if (sourceValue === undefined) return false;
-
-  const keys = path.split(".");
-  let cursor = target;
-  for (const key of keys.slice(0, -1)) {
-    const next = cursor[key];
-    if (next === undefined) {
-      cursor[key] = {};
-      cursor = cursor[key];
-      continue;
-    }
-    if (!isPlainObject(next)) return false;
-    cursor = next;
-  }
-
-  const leaf = keys[keys.length - 1];
-  if (leaf in cursor) return false;
-  cursor[leaf] = JSON.parse(JSON.stringify(sourceValue));
-  return true;
-}
-
-function migrateSetting(current, example) {
-  const migrated = [];
-  if (
-    isPlainObject(current.llm) &&
-    isPlainObject(current.llm.routes) &&
-    !("chat_types" in current.llm) &&
-    isPlainObject(example.llm?.chat_types)
-  ) {
-    current.llm.chat_types = JSON.parse(JSON.stringify(example.llm.chat_types));
-    migrated.push("llm.chat_types");
-  }
-  return migrated;
-}
-
-function syncSettingFields() {
-  const settingPath = join(homedir(), ".mori", "setting.json");
-  if (!existsSync(settingPath)) {
-    log("setting.json 不存在，跳过补全字段。");
-    return;
-  }
-
-  const example = readJson(join(repoRoot, "data", "setting.example.json"));
-  const current = readJson(settingPath);
-  const added = [];
-  const migrated = migrateSetting(current, example);
-
-  for (const path of AUTO_SYNC_SETTING_PATHS) {
-    if (fillMissingPath(current, example, path)) added.push(path);
-  }
-
-  if (migrated.length === 0 && added.length === 0) {
-    log("setting.json 无需补全字段。");
-    return;
-  }
-
-  writeFileSync(settingPath, JSON.stringify(current, null, 2) + "\n", { mode: 0o600 });
-  if (migrated.length > 0) {
-    log("已迁移 setting.json 字段：");
-    for (const path of migrated) log(`  ~ ${path}`);
-  }
-  if (added.length === 0) return;
-  log(`已为 setting.json 补全 ${added.length} 个字段：`);
-  for (const path of added) log(`  + ${path}`);
 }
 
 function shortCommit(commit) {
@@ -259,8 +171,6 @@ run("pnpm", ["install", "--frozen-lockfile"]);
 
 log("pnpm build");
 run("pnpm", ["build"]);
-
-syncSettingFields();
 
 if (wasRunning) {
   log("重启 daemon");

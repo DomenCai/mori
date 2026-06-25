@@ -14,7 +14,7 @@
 | 日记、storylines、daily memory、weekly consolidation | [记忆模型](memory-model.md) |
 | scope、续聊、新会话、thread/topic 冷却 | [会话与冷却规则](sessions.md) |
 | vault、Inbox/Garden、知识反应、知识工具 | [知识库](knowledge-base.md) |
-| weekly summary、daily memory、knowledge index、script 投喂 | [定时任务](schedules.md) |
+| weekly summary、daily memory、knowledge index、自定义投喂 | [定时任务](schedules.md) |
 | 本地开发、调试、数据库、日志 | [开发指南](development.md) |
 | 设计历史和后续规划 | [Design Index](../design/index.md) |
 
@@ -30,7 +30,7 @@
 | Daily memory 审计查看 | `/dream` | [飞书命令](commands.md)、[定时任务](schedules.md) |
 | 周度合并 | 定时任务、`/consolidate` | [定时任务](schedules.md)、[记忆模型](memory-model.md) |
 | 知识收藏与检索 | 自然语言收藏 URL、知识工具、通知群反应 | [知识库](knowledge-base.md) |
-| Script 定时投喂 | `schedules.json` + `.mjs` 脚本 | [定时任务](schedules.md)、[配置参考](configuration.md) |
+| Script / agent 定时投喂 | `schedules.json` + `.mjs` 脚本或 inline prompt | [定时任务](schedules.md)、[配置参考](configuration.md) |
 | 模型/provider 切换 | `setting.json` + `.env` | [配置参考](configuration.md) |
 | 本地调试和数据库查看 | `pnpm dev`、`data/app.db`、日志 | [开发指南](development.md) |
 

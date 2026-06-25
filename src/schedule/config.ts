@@ -34,6 +34,8 @@ export interface ScriptSchedule extends BaseSchedule {
 export interface AgentSchedule extends BaseSchedule {
   kind: "agent";
   cron: string;
+  /** setting.llm.model_profiles 里的档位名；不填或无效时走 normal。 */
+  profile?: string;
   prompt?: string;
   script?: string;
   system?: "bare" | "mori" | string;
@@ -44,6 +46,8 @@ export interface AgentSchedule extends BaseSchedule {
 
 export interface ScheduleDeliver {
   notify?: boolean;
+  /** 通知群名称；不填走默认通知群。配了就按名字在 notification 群里找/建。 */
+  notifyChat?: string;
   inbox?: string;
 }
 

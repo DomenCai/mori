@@ -38,6 +38,7 @@ import { systemClock } from "../clock.js";
 import { logger } from "../log.js";
 
 const distillLog = logger("distill");
+const taskLog = logger("schedule-agent");
 
 // 一段会话窗口的用户输入总字数低于此值，视为寒暄/确认类废会话，关会话时不单独蒸馏。
 const MIN_DISTILL_USER_CHARS = 80;
@@ -83,6 +84,7 @@ export type TaskTool = string | AgentTool<any>;
 export interface RunTaskOptions {
   system?: TaskSystemPrompt;
   tools?: TaskTool[];
+  profile?: string;
 }
 
 export class HarnessManager {
@@ -146,6 +148,7 @@ export class HarnessManager {
       runId?: string;
       activeToolNames?: string[];
       extraTools?: AgentTool<any>[];
+      profileName?: string;
       systemPrompt?: string;
     } = {},
   ): Promise<HarnessEntry> {
@@ -329,6 +332,7 @@ ${JSON.stringify(files, null, 2)}
       runId,
       activeToolNames,
       extraTools: customTools,
+      profileName: this.resolveTaskProfileName(opts.profile),
       systemPrompt: this.resolveTaskSystemPrompt(opts.system ?? "bare"),
     });
 
@@ -355,6 +359,7 @@ ${JSON.stringify(files, null, 2)}
       runId?: string;
       activeToolNames?: string[];
       extraTools?: AgentTool<any>[];
+      profileName?: string;
       systemPrompt?: string;
     },
   ): Promise<HarnessEntry> {
@@ -362,7 +367,7 @@ ${JSON.stringify(files, null, 2)}
       cwd: `${chatType}/${businessDateKey().slice(0, 7)}`,
     });
 
-    const profileName = this.chatTypes[chatType] ?? DEFAULT_PROFILE;
+    const profileName = opts.profileName ?? this.chatTypes[chatType] ?? DEFAULT_PROFILE;
     const profile = this.profiles[profileName];
     if (!profile) {
       throw new Error(`未找到模型档位: ${profileName}（chatType=${chatType}）`);
@@ -448,6 +453,13 @@ ${JSON.stringify(files, null, 2)}
 
     this.entries.set(scopeId, entry);
     return entry;
+  }
+
+  private resolveTaskProfileName(profileName?: string): string {
+    if (!profileName) return DEFAULT_PROFILE;
+    if (this.profiles[profileName]) return profileName;
+    taskLog.warn(`未找到 schedule profile=${profileName}，回退 ${DEFAULT_PROFILE}`);
+    return DEFAULT_PROFILE;
   }
 
   private resolveTaskSystemPrompt(system: TaskSystemPrompt): string {

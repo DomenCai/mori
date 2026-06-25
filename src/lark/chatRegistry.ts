@@ -14,17 +14,19 @@ export class ChatRegistry {
     private saveConfig: (cfg: LarkConfig) => void,
   ) {}
 
-  register(chatId: string, chatType: ChatType, name?: string): void {
+  register(chatId: string, chatType: ChatType, name?: string, isDefault?: boolean): void {
     const bindings = this.bindings();
     const existing = bindings.find((item) => item.chatId === chatId);
     if (existing) {
       existing.chatType = chatType;
       existing.name = name;
+      if (isDefault !== undefined) existing.isDefault = isDefault;
     } else {
       bindings.push({
         chatId,
         chatType,
         name,
+        ...(isDefault ? { isDefault } : {}),
         createdAt: nowISO(),
       });
     }
@@ -41,10 +43,16 @@ export class ChatRegistry {
       .map((item) => item.chatId);
   }
 
-  getNotificationChats(): string[] {
-    return this.bindings()
-      .filter((item) => item.chatType === "notification")
-      .map((item) => item.chatId);
+  findNotificationChatByName(name: string): string | undefined {
+    return this.bindings().find(
+      (item) => item.chatType === "notification" && item.name === name,
+    )?.chatId;
+  }
+
+  getDefaultNotificationChat(): string | undefined {
+    return this.bindings().find(
+      (item) => item.chatType === "notification" && item.isDefault,
+    )?.chatId;
   }
 
   getOwnerOpenId(): string | undefined {

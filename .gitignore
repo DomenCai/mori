@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/*
 !data/setting.example.json
+!data/model-prices.csv
 !data/script/
 data/script/*
 !data/script/*.mjs

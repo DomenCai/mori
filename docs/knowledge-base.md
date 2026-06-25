@@ -15,7 +15,7 @@ vault/
 
 | 区域 | 用途 |
 |---|---|
-| `Inbox/` | script 定时投喂的候选内容，等待用户反应 |
+| `Inbox/` | 定时投喂的候选内容，等待用户反应 |
 | `Garden/` | 用户主动收藏，或从 Inbox 晋升后的 kept 内容 |
 | `.index.md` | knowledge index builtin 生成的知识地图 |
 
@@ -52,7 +52,7 @@ pushed_message_id: om_xxx
 | 方式 | 结果 |
 |---|---|
 | 用户明确要求收藏 URL | Agent 可调用 `fetch_article` 抓正文，再 `save_to_garden` 直接写入 `Garden/YYYY-MM/` |
-| script 定时任务产出文章 | 框架写入 `Inbox/<任务名>/YYYY-MM/`，可选发到通知群 |
+| 定时任务产出文章 | 框架写入 `Inbox/<任务名>/YYYY-MM/`，可选发到通知群 |
 | 用户普通回复通知群知识卡 | 对应 Inbox 文件被 `promote` 到 Garden，frontmatter 记录 `my_note`，并写一条 reaction episode |
 | 用户话题回复通知群知识卡 | 文件先晋升到 Garden；thread 内可深聊，thread 关闭时蒸馏这段讨论 |
 
@@ -81,7 +81,7 @@ pushed_message_id: om_xxx
 
 ## 通知群反馈回路
 
-script 投喂会创建或复用“mori 通知”群。通知卡片包含标题、领域、标签、vault 路径和摘要。
+定时投喂会使用默认通知群，或按 `deliver.notifyChat` 使用命名通知群。通知卡片包含标题、领域、标签、vault 路径和摘要。
 
 - 普通回复：快速收藏和记录看法，不展开长对话。
 - 话题回复：进入飞书 thread 深聊，thread 是独立 scope。

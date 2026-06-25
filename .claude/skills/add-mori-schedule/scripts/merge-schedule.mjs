@@ -7,10 +7,10 @@
 //       --cron "<cron>" [--inbox <Inbox名>] [--notify true|false] [--enabled true|false] [--file <path>]
 //   agent inline:
 //     node merge-schedule.mjs --kind agent --id <id> --name <显示名> --prompt "..." \
-//       --cron "<cron>" [--system bare|mori|自定义] [--tools search_memory,read_vault]
+//       --cron "<cron>" [--profile normal|strong] [--system bare|mori|自定义] [--tools search_memory,read_vault]
 //   agent script:
 //     node merge-schedule.mjs --kind agent --id <id> --name <显示名> --script <x.mjs> \
-//       --cron "<cron>" [--inbox <Inbox名>]
+//       --cron "<cron>" [--profile normal|strong] [--inbox <Inbox名>]
 // --file 默认 ~/.mori/schedules.json（生产）；开发传 ./data/schedules.json。
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -50,6 +50,7 @@ const entry = {
 };
 if (args.script) entry.script = args.script;
 if (args.prompt) entry.prompt = args.prompt;
+if (kind === "agent" && args.profile) entry.profile = args.profile;
 if (args.system) entry.system = args.system;
 if (args.tools) entry.tools = args.tools.split(",").map((item) => item.trim()).filter(Boolean);
 entry.deliver = { notify: args.notify !== "false" };
