@@ -71,6 +71,46 @@ export function renderInfoCard(title: string, body: string): object {
   };
 }
 
+const WELCOME_MORE =
+  "- 回看日记、梳理叙事线 → <font color='wathet'>/dream</font>、<font color='wathet'>/storylines</font>\n" +
+  "- 记住你是谁、你正在经历什么 → <font color='wathet'>/profile</font>、<font color='wathet'>/chapter</font>\n" +
+  "- 定时报告与信息投喂 → <font color='wathet'>/schedules</font>\n" +
+  "- 日记请发在日记群，我会单独整理 → <font color='wathet'>/new-diary-group</font>\n" +
+  "- 开一个主题群深聊 → <font color='wathet'>/new-chat 群名</font>";
+
+// 首次绑定后的"上手卡"：精简动作 + 折叠的完整能力 + 一个创建日记群按钮。
+export function renderWelcomeCard(): object {
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "嘿 🌱 我是 mori。" }, template: "turquoise" },
+    body: {
+      elements: [
+        markdown(
+          "我是你一个随时在线的朋友，今天遇到什么、脑子里突然冒出的想法、或者就想吐槽两句，直接发过来。我会慢慢记住这些，帮你把散落的日子串成你自己的故事。\n\n" +
+          "**先试试这些**\n\n" +
+          "- 跟我说说今天发生了什么\n" +
+          "- **<font color='wathet'>/help</font>** → 查看全部能力\n" +
+          "- **<font color='wathet'>/profile</font>** → 看看我眼里的你\n",
+        ),
+        collapsiblePanel("mori 还能帮你做什么", WELCOME_MORE),
+        markdown(
+          "\n**日记发在专门的日记群里**\n" +
+          "点下面按钮建一个，日记和复盘丢那儿，我会单独帮你整理。",
+        ),
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: "创建日记群" },
+          type: "default",
+          width: "default",
+          behaviors: [
+            { type: "callback", value: { action: "onboard_diary_group" } },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 export function renderStorylinesCard(items: Storyline[]): object {
   const active = items.filter((item) => item.status === "active").length;
   const dormant = items.filter((item) => item.status === "dormant").length;
@@ -239,14 +279,16 @@ function collapsiblePanel(
     tag: "collapsible_panel",
     expanded: options.expanded ?? false,
     header: {
-      title: { tag: "markdown", content: `**${title}**` },
+      title: { tag: "markdown", content: `**<font color='white'>${title}</font>**` },
       vertical_align: "center",
+      background_color: "grey",
+      width: "auto_when_fold",
       icon: {
         tag: "standard_icon",
         token: "down-small-ccm_outlined",
         size: "16px 16px",
       },
-      icon_position: "follow_text",
+      icon_position: "right",
       icon_expanded_angle: -180,
     },
     border: { color: "grey", corner_radius: "5px" },

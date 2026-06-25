@@ -28,24 +28,24 @@ interface CommandResult {
 }
 
 function helpText(): string {
-  return `/think <内容> - 顺着为什么往下钻；也可回复一条消息使用
-/rank <内容> - 把一个领域砍到两三根生成器；也可回复一条消息使用
-/plain <内容> - 用大白话讲到能复述；也可回复一条消息使用
-/new-diary-group - 创建一个日记群
-/new-chat <主题> - 创建一个持续主题群
-/new - 重置当前会话
-/compact - 压缩当前会话上下文
-/profile - 查看身份画像
-/profile history - 查看画像变更历史
-/chapter - 查看当前主线
-/chapter history - 查看当前主线变更历史
-/storylines - 查看 active + recent dormant 叙事线
-/storyline <id> - 查看单条叙事线详情
-/dream - 查看最近 7 天里有变更的 daily_memory runs
-/dream <天数> - 查看最近 N 天里有变更的 daily_memory runs
-/dream YYYY-MM-DD - 查看某天 daily_memory 详情
-/schedules - 查看定时任务配置
-/consolidate - 手动触发周度合并`;
+  return `**<font color='wathet'>/think <内容></font>** - 顺着为什么往下钻；也可回复一条消息使用
+**<font color='wathet'>/rank <内容></font>** - 把一个领域砍到两三根生成器；也可回复一条消息使用
+**<font color='wathet'>/plain <内容></font>** - 用大白话讲到能复述；也可回复一条消息使用
+**<font color='wathet'>/new-diary-group</font>** - 创建一个日记群
+**<font color='wathet'>/new-chat <主题></font>** - 创建一个持续主题群
+**<font color='wathet'>/new</font>** - 重置当前会话
+**<font color='wathet'>/compact</font>** - 压缩当前会话上下文
+**<font color='wathet'>/profile</font>** - 查看身份画像
+**<font color='wathet'>/profile history</font>** - 查看画像变更历史
+**<font color='wathet'>/chapter</font>** - 查看当前主线
+**<font color='wathet'>/chapter history</font>** - 查看当前主线变更历史
+**<font color='wathet'>/storylines</font>** - 查看 active + recent dormant 叙事线
+**<font color='wathet'>/storyline <id></font>** - 查看单条叙事线详情
+**<font color='wathet'>/dream</font>** - 查看最近 7 天里有变更的 daily_memory runs
+**<font color='wathet'>/dream <天数></font>** - 查看最近 N 天里有变更的 daily_memory runs
+**<font color='wathet'>/dream YYYY-MM-DD</font>** - 查看某天 daily_memory 详情
+**<font color='wathet'>/schedules</font>** - 查看定时任务配置
+**<font color='wathet'>/consolidate</font>** - 手动触发周度合并`;
 }
 
 export async function handleCommand(
@@ -100,17 +100,25 @@ async function handleHelp(
   return { handled: true };
 }
 
+export async function createDiaryGroup(
+  channel: LarkChannel,
+  registry: ChatRegistry,
+  ownerOpenId: string,
+): Promise<void> {
+  const { chatId } = await channel.createChat({
+    name: "日记群",
+    description: "mori 日记",
+    inviteUserIds: [ownerOpenId],
+    userIdType: "open_id",
+  });
+  registry.register(chatId, "diary", "日记群");
+}
+
 async function handleNewDiaryGroup(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  const { chatId } = await ctx.channel.createChat({
-    name: "日记群",
-    description: "mori 日记",
-    inviteUserIds: [ctx.ownerOpenId],
-    userIdType: "open_id",
-  });
-  ctx.registry.register(chatId, "diary", "日记群");
+  await createDiaryGroup(ctx.channel, ctx.registry, ctx.ownerOpenId);
   await ctx.channel.send(msg.chatId, {
     text: `✅ 日记群已创建，去新群里记日记吧！`,
   });

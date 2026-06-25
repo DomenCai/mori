@@ -342,6 +342,8 @@ export interface LarkConfig {
   tenant: "feishu" | "lark";
   /** 扫码人 open_id；飞书未返回时为空，由首条私聊消息绑定。 */
   ownerOpenId?: string;
+  /** 首次欢迎引导已推送的时间戳；存在即不再重复推送。 */
+  onboardedAt?: string;
   /** 飞书 chat 绑定属于运行配置，不能依赖 app.db，否则重建数据库会丢群绑定。 */
   chatBindings?: LarkChatBinding[];
 }
@@ -370,6 +372,7 @@ export function saveLarkConfig(cfg: LarkConfig): void {
     domain: cfg.domain,
     tenant: cfg.tenant,
     ...(cfg.ownerOpenId ? { ownerOpenId: cfg.ownerOpenId } : {}),
+    ...(cfg.onboardedAt ? { onboardedAt: cfg.onboardedAt } : {}),
     ...(cfg.chatBindings ? { chatBindings: cfg.chatBindings } : {}),
   };
   writeFileSync(LARK_CONFIG_FILE, JSON.stringify(clean, null, 2) + "\n", { mode: 0o600 });

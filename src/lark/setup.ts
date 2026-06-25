@@ -31,6 +31,7 @@ export async function runRegistrationWizard(): Promise<LarkConfig> {
     source: "mori",
     appPreset: { name: "mori" },
     addons: MORI_APP_ADDONS,
+    createOnly: false,
     onQRCodeReady: (info) => {
       console.log("请用飞书 App 扫描以下二维码完成应用创建/授权：\n");
       qrcode.generate(info.url, { small: true });

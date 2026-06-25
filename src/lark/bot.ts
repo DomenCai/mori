@@ -21,10 +21,12 @@ import {
 import { ChatRegistry } from "./chatRegistry.js";
 import { initChannel } from "./channel.js";
 import {
+  createDiaryGroup,
   handleCommand,
   renderSchedulesCard,
   type CommandContext,
 } from "./commands.js";
+import { renderWelcomeCard } from "./cards.js";
 import { toIngestedMessage } from "./ingest.js";
 import { parseLens } from "./lenses.js";
 import {
@@ -96,6 +98,9 @@ export async function startLarkBot(
         larkLog.debug(`忽略非 owner 卡片动作 from=${evt.operator.openId}`);
         return;
       }
+      if (await handleOnboardingAction(evt, channel, registry, cmdCtx.ownerOpenId)) {
+        return;
+      }
       if (
         await handleScheduleAction(
           evt,
@@ -149,6 +154,13 @@ async function handleLarkMessage(
   } else if (msg.senderId !== cmdCtx.ownerOpenId) {
     larkLog.debug(`忽略非 owner 消息 from=${msg.senderId}`);
     return;
+  }
+
+  if (msg.chatType === "p2p" && !larkConfig.onboardedAt) {
+    await channel.send(msg.chatId, { card: renderWelcomeCard() });
+    larkConfig.onboardedAt = new Date().toISOString();
+    saveLarkConfig(larkConfig);
+    bootLog.info(`已推送首次欢迎引导 to=${msg.senderId}`);
   }
 
   const ingested = toIngestedMessage(
@@ -218,6 +230,30 @@ async function handleLarkMessage(
   } else {
     await handleChatMessage(msg, ingested, channel, harnessManager, "dm");
   }
+}
+
+async function handleOnboardingAction(
+  evt: CardActionEvent,
+  channel: ReturnType<typeof initChannel>,
+  registry: ChatRegistry,
+  ownerOpenId: string,
+): Promise<boolean> {
+  const value = evt.action.value;
+  if (!value || typeof value !== "object") return false;
+  if ((value as Record<string, unknown>).action !== "onboard_diary_group") {
+    return false;
+  }
+  if (registry.getDiaryChats().length > 0) {
+    await channel.send(evt.chatId, {
+      text: "你已经有日记群了，去那个群里记日记就行～",
+    });
+    return true;
+  }
+  await createDiaryGroup(channel, registry, ownerOpenId);
+  await channel.send(evt.chatId, {
+    text: "✅ 日记群已创建，去新群里记第一篇日记吧！",
+  });
+  return true;
 }
 
 async function handleScheduleAction(

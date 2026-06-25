@@ -123,6 +123,77 @@ async function streamAgentReply(
   };
 }
 
+// 一条 assistant 消息里的文本块拼起来；非 assistant 或无文本返回空串。
+function assistantMessageText(message: unknown): string {
+  const msg = message as { role?: unknown; content?: unknown };
+  if (msg.role !== "assistant" || !Array.isArray(msg.content)) return "";
+  return msg.content
+    .map((block) => {
+      const b = block as { type?: unknown; text?: unknown };
+      return b.type === "text" && typeof b.text === "string" ? b.text : "";
+    })
+    .join("")
+    .trim();
+}
+
+// DM 不流式，且每条 assistant 消息单独发：像真人一条条蹦消息。一轮里 agent
+// 可能先说"让我查一下"、调工具、再给答案——每条 message_end 就即时发一条。
+async function sendAgentReplyText(
+  channel: LarkChannel,
+  msg: NormalizedMessage,
+  entry: HarnessEntry,
+  runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
+  log: typeof larkLog,
+): Promise<{ messageId: string; assistantText: string }> {
+  const texts: string[] = [];
+  let lastMessageId = "";
+  let promptError: string | null = null;
+  const started = Date.now();
+
+  const unsubscribe = entry.harness.subscribe(async (event) => {
+    if (event.type === "message_end") {
+      const text = assistantMessageText(event.message);
+      if (text) {
+        texts.push(text);
+        const sent = await channel.send(msg.chatId, { markdown: text });
+        lastMessageId = sent.messageId;
+      }
+    }
+    if (event.type === "turn_end") {
+      promptError = getAssistantError(event.message) ?? promptError;
+    }
+  });
+
+  try {
+    const outcome = (await runPrompt()) ?? {};
+    promptError = outcome.promptError ?? promptError;
+  } catch (err) {
+    promptError = formatError(err);
+    log.error("prompt 失败:", err);
+  } finally {
+    unsubscribe();
+  }
+
+  const elapsed = Date.now() - started;
+  log[promptError ? "warn" : "info"](
+    `回复${promptError ? "失败" : "完成"} chat=${msg.chatId} 耗时=${elapsed}ms`,
+  );
+
+  if (promptError) {
+    const sent = await channel.send(
+      msg.chatId,
+      { text: texts.length ? `（出错了：${promptError}）` : `处理失败：${promptError}` },
+      replyOptions(msg),
+    );
+    lastMessageId = sent.messageId;
+  } else if (!texts.length) {
+    const sent = await channel.send(msg.chatId, { text: "…" }, replyOptions(msg));
+    lastMessageId = sent.messageId;
+  }
+
+  return { messageId: lastMessageId, assistantText: texts.join("\n\n") };
+}
+
 export function isDiaryEntryMessage(msg: NormalizedMessage): boolean {
   return !msg.replyToMessageId && !msg.rootId;
 }
@@ -221,7 +292,8 @@ export async function handleChatMessage(
   await promoteKnowledgeIfNeeded(message, harnessManager);
   larkLog.info(`处理对话 scope=${scopeId} type=${chatType}`);
 
-  const sent = await streamAgentReply(
+  const stream = chatType === "dm" ? sendAgentReplyText : streamAgentReply;
+  const sent = await stream(
     channel,
     msg,
     entry,
