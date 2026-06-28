@@ -39,7 +39,7 @@ async function streamAgentReply(
   entry: HarnessEntry,
   runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
   log: typeof larkLog,
-): Promise<{ messageId: string; assistantText: string }> {
+): Promise<{ messageId: string; assistantText: string; messageIds: string[]; texts: string[] }> {
   let assistantText = "";
   const started = Date.now();
   const sent = await channel.stream(
@@ -120,6 +120,8 @@ async function streamAgentReply(
   return {
     messageId: sent.messageId,
     assistantText,
+    messageIds: [sent.messageId],
+    texts: [assistantText],
   };
 }
 
@@ -144,8 +146,9 @@ async function sendAgentReplyText(
   entry: HarnessEntry,
   runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
   log: typeof larkLog,
-): Promise<{ messageId: string; assistantText: string }> {
+): Promise<{ messageId: string; assistantText: string; messageIds: string[]; texts: string[] }> {
   const texts: string[] = [];
+  const messageIds: string[] = [];
   let lastMessageId = "";
   let promptError: string | null = null;
   const started = Date.now();
@@ -157,6 +160,7 @@ async function sendAgentReplyText(
         texts.push(text);
         const sent = await channel.send(msg.chatId, { markdown: text });
         lastMessageId = sent.messageId;
+        messageIds.push(sent.messageId);
       }
     }
     if (event.type === "turn_end") {
@@ -186,12 +190,19 @@ async function sendAgentReplyText(
       replyOptions(msg),
     );
     lastMessageId = sent.messageId;
+    messageIds.push(sent.messageId);
   } else if (!texts.length) {
     const sent = await channel.send(msg.chatId, { text: "…" }, replyOptions(msg));
     lastMessageId = sent.messageId;
+    messageIds.push(sent.messageId);
   }
 
-  return { messageId: lastMessageId, assistantText: texts.join("\n\n") };
+  return {
+    messageId: lastMessageId,
+    assistantText: texts.join("\n\n"),
+    messageIds,
+    texts,
+  };
 }
 
 export function isDiaryEntryMessage(msg: NormalizedMessage): boolean {
@@ -206,11 +217,29 @@ export async function handleDiaryMessage(
   mode: "entry" | "reply",
 ): Promise<void> {
   const scopeId = message.conversationId;
-  const entry = await harnessManager.getOrCreate(scopeId, "diary");
+  await harnessManager.withScopeLock(scopeId, () =>
+    handleDiaryMessageInLock(msg, message, channel, harnessManager, mode),
+  );
+}
+
+async function handleDiaryMessageInLock(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  channel: LarkChannel,
+  harnessManager: HarnessManager,
+  mode: "entry" | "reply",
+): Promise<void> {
+  const scopeId = message.conversationId;
+  const entry = await harnessManager.getOrCreateForMessageInLock(scopeId, "diary", message);
   const messageService = harnessManager.getMessageService();
   const messageTime = message.occurredAt;
   if (mode === "reply") {
     messageService.saveUserMessage(message);
+    harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
+  } else {
+    // entry 模式下 distillDiaryEntry 内部会 saveUserMessage，但 message_session_entries
+    // 仍要由 handler 这层来登记，确保未来回复这条日记 anchor 时能命中 session。
+    harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
   }
   harnessManager.recordActivity(scopeId, messageTime);
 
@@ -264,16 +293,25 @@ export async function handleDiaryMessage(
     }
   })();
 
-  messageService.saveAssistantMessage({
-    id: larkMessageId(sent.messageId)!,
-    source: "lark",
-    conversationId: message.conversationId,
-    conversationType: message.conversationType,
-    content: sent.assistantText || "（卡片回复）",
-    replyTo: message.id,
-    threadId: message.threadId,
-    rootId: message.rootId,
-  });
+  const assistantOccurredAt = nowISO();
+  // DM 多条消息：每条单独存 messages 表 + 登记 message_session_entries，
+  // 让用户未来回复任意一条都能定位到原 session。
+  for (let i = 0; i < sent.messageIds.length; i++) {
+    const id = larkMessageId(sent.messageIds[i])!;
+    const text = sent.texts[i] ?? sent.assistantText ?? "（卡片回复）";
+    messageService.saveAssistantMessage({
+      id,
+      source: "lark",
+      conversationId: message.conversationId,
+      conversationType: message.conversationType,
+      content: text || "（卡片回复）",
+      replyTo: message.id,
+      threadId: message.threadId,
+      rootId: message.rootId,
+      occurredAt: assistantOccurredAt,
+    });
+    harnessManager.recordAssistantMessage(scopeId, id, assistantOccurredAt);
+  }
 }
 
 export async function handleChatMessage(
@@ -284,10 +322,24 @@ export async function handleChatMessage(
   chatType: "dm" | "topic" | "thread",
 ): Promise<void> {
   const scopeId = message.conversationId;
-  const entry = await harnessManager.getOrCreate(scopeId, chatType);
+  await harnessManager.withScopeLock(scopeId, () =>
+    handleChatMessageInLock(msg, message, channel, harnessManager, chatType),
+  );
+}
+
+async function handleChatMessageInLock(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  channel: LarkChannel,
+  harnessManager: HarnessManager,
+  chatType: "dm" | "topic" | "thread",
+): Promise<void> {
+  const scopeId = message.conversationId;
+  const entry = await harnessManager.getOrCreateForMessageInLock(scopeId, chatType, message);
   const messageService = harnessManager.getMessageService();
   const messageTime = message.occurredAt;
   messageService.saveUserMessage(message);
+  harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
   harnessManager.recordActivity(scopeId, messageTime);
   await promoteKnowledgeIfNeeded(message, harnessManager);
   larkLog.info(`处理对话 scope=${scopeId} type=${chatType}`);
@@ -305,16 +357,25 @@ export async function handleChatMessage(
     larkLog,
   );
 
-  messageService.saveAssistantMessage({
-    id: larkMessageId(sent.messageId)!,
-    source: "lark",
-    conversationId: message.conversationId,
-    conversationType: message.conversationType,
-    content: sent.assistantText || "（卡片回复）",
-    replyTo: message.id,
-    threadId: message.threadId,
-    rootId: message.rootId,
-  });
+  const assistantOccurredAt = nowISO();
+  // sendAgentReplyText 可能发出多条飞书消息（DM 一条条蹦）：每条都登记，
+  // 这样用户未来回复任意一条都能命中原 session。streamAgentReply 只有一条卡片，messageIds 长度恒为 1。
+  for (let i = 0; i < sent.messageIds.length; i++) {
+    const id = larkMessageId(sent.messageIds[i])!;
+    const text = sent.texts[i] ?? sent.assistantText ?? "（卡片回复）";
+    messageService.saveAssistantMessage({
+      id,
+      source: "lark",
+      conversationId: message.conversationId,
+      conversationType: message.conversationType,
+      content: text || "（卡片回复）",
+      replyTo: message.id,
+      threadId: message.threadId,
+      rootId: message.rootId,
+      occurredAt: assistantOccurredAt,
+    });
+    harnessManager.recordAssistantMessage(scopeId, id, assistantOccurredAt);
+  }
 }
 
 export async function handleLensMessage(
@@ -336,9 +397,25 @@ export async function handleLensMessage(
   }
 
   const scopeId = message.conversationId;
-  const entry = await harnessManager.getOrCreate(scopeId, chatType);
+  await harnessManager.withScopeLock(scopeId, () =>
+    handleLensMessageInLock(msg, message, channel, harnessManager, chatType, lens, target),
+  );
+}
+
+async function handleLensMessageInLock(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  channel: LarkChannel,
+  harnessManager: HarnessManager,
+  chatType: "dm" | "topic" | "thread",
+  lens: ParsedLens,
+  target: string,
+): Promise<void> {
+  const scopeId = message.conversationId;
+  const entry = await harnessManager.getOrCreateForMessageInLock(scopeId, chatType, message);
   const messageService = harnessManager.getMessageService();
   messageService.saveUserMessage(message);
+  harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
   harnessManager.recordActivity(scopeId, message.occurredAt);
   larkLog.info(`处理 lens scope=${scopeId} type=${chatType} lens=${lens.lens}`);
 
@@ -372,6 +449,11 @@ export async function handleLensMessage(
       threadId: message.threadId,
       rootId: message.rootId,
     });
+    harnessManager.recordAssistantMessage(
+      scopeId,
+      larkMessageId(sent.messageId)!,
+      nowISO(),
+    );
   } finally {
     entry.toolGuard.reset();
   }

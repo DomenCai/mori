@@ -80,7 +80,7 @@ export function buildMemorySnapshot(
               people_json, last_active_at
        FROM storylines
        WHERE status = 'active'
-       ORDER BY last_active_at DESC`,
+       ORDER BY last_active_at DESC, id ASC`,
     )
     .all() as Array<Record<string, any>>;
 
@@ -90,7 +90,7 @@ export function buildMemorySnapshot(
               people_json, last_active_at
        FROM storylines
        WHERE status = 'dormant'
-       ORDER BY last_active_at DESC
+       ORDER BY last_active_at DESC, id ASC
        LIMIT ?`,
     )
     .all(
@@ -104,7 +104,7 @@ export function buildMemorySnapshot(
       `SELECT id, brief, occurred_at, source_conversation_id, source_message_id
        FROM episodes
        WHERE digested_run_id IS NULL
-       ORDER BY occurred_at ASC
+       ORDER BY occurred_at ASC, id ASC
        LIMIT 10`,
     )
     .all();
@@ -170,7 +170,6 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
         if (item.current_tension) lines.push(`当前张力：${item.current_tension}`);
         if (item.emotional_arc) lines.push(`情绪/态度弧线：${item.emotional_arc}`);
         if (item.people.length) lines.push(`相关人：${item.people.join("、")}`);
-        lines.push(`last_active_at：${item.last_active_at}`);
         return lines.join("\n");
       })
       .join("\n\n");
@@ -186,7 +185,6 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
           if (item.current_tension) lines.push(`当前张力：${item.current_tension}`);
           if (item.emotional_arc) lines.push(`情绪/态度弧线：${item.emotional_arc}`);
         }
-        lines.push(`last_active_at：${item.last_active_at}`);
         return lines.join("\n");
       })
       .join("\n\n");
@@ -195,12 +193,22 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
 
   if (snapshot.freshEpisodes.length > 0) {
     const eps = snapshot.freshEpisodes
-      .map((e) => `- ${e.id} [${e.occurred_at}] ${e.brief ?? "（无摘要）"}`)
+      .map((e) => `- ${e.id} ${e.brief ?? "（无摘要）"}`)
       .join("\n");
     sections.push("---\n# Fresh episodes（尚未被 daily_memory 消化）\n" + eps);
   }
 
-  sections.push("---\n# 知识地图\n" + snapshot.knowledgeIndex);
+  sections.push("---\n# 知识地图\n" + filterVolatileMetadata(snapshot.knowledgeIndex));
 
   return sections.join("\n\n");
+}
+
+// 知识地图正文里被工具注入的 frontmatter 片段可能带 updated_at（每次写盘都变）；
+// 把这种波动元数据剔掉，保证记忆源不变时 system prompt 字节级稳定。
+// 只过滤 `updated_at:` 这一行，不误伤 `last_updated_at:` 等其它字段。
+function filterVolatileMetadata(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("updated_at:"))
+    .join("\n");
 }

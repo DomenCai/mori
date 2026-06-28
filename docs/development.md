@@ -62,6 +62,8 @@ LOG_LEVEL=debug pnpm dev   # debug | info（默认） | warn | error
 
 Agent transcript 由 pi-agent-core 的 `JsonlSessionRepo` 维护成 JSONL。本应用覆盖了默认的扁平 cwd 编码，改成按 `chatType/月份` 嵌套分桶，例如 `diary/2026-06/`、`dm/2026-06/`、`topic/2026-06/`。文件名用 `setting.time.timezone` 对应的本地时间加 session id，例如 `2026-06-19T01-40-22-483+08-00_<session_id>.jsonl`。
 
+`agent_sessions` 与 `message_session_entries`（见 `src/storage/schema.sql`）是 JSONL transcript 的恢复索引：进程重启或用户回复历史消息时，从这两张表定位 transcript 文件并 reopen。索引只追踪交互式 chat type（`dm` / `topic` / `thread` / `diary`），不收录内部任务（`schedule` / `distill` / `daily_memory` / `consolidation` / `knowledge_index`）和 backfill。恢复规则见 [会话与冷却规则](sessions.md)。
+
 ## 数据库
 
 SQLite（`data/app.db`），schema 在 `src/storage/schema.sql`，启动时 `initDb` 幂等建表。直接用 `sqlite3 data/app.db` 查表调试。

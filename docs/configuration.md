@@ -127,6 +127,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 }
 ```
 
+`policies` 同时影响进程内的 idle close 和冷启动恢复时对 unclosed session 的过期判断：`dm` / `thread` / `diary` 重启后若距 `last_activity_at` 超过 `idleMinutes`，会标 closed 并新建；`topic` 没有 `idleMinutes`，重启后任意时间都能 reopen 之前的 unclosed session。已 closed 的 session 仍可被明确 `reply_to` 历史消息恢复，详见 [会话与冷却规则](sessions.md)。
+
 `setting.script.defaults` 是 script schedule 的默认 timeout 和 worker `resourceLimits`。单个 script 可在 `schedules.json` 的 `runtime` 里覆盖。
 
 `setting.http.fetch` 控制 `fetch_article` 的 `timeoutMs` 和 `userAgent`。`setting.knowledge.index.checkIntervalMs` 控制 knowledge index 后台评估周期。

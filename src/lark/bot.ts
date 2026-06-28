@@ -1,4 +1,4 @@
-import type { CardActionEvent, NormalizedMessage } from "@larksuite/channel";
+import type { ApiMessageItem, CardActionEvent, NormalizedMessage } from "@larksuite/channel";
 import type Database from "better-sqlite3";
 import { HarnessManager, type HarnessModelProfile } from "../agent/harness.js";
 import {
@@ -19,6 +19,7 @@ import {
   toggleScheduleEnabled,
 } from "../schedule/config.js";
 import { ChatRegistry } from "./chatRegistry.js";
+import { larkCardToText } from "./cardText.js";
 import { initChannel } from "./channel.js";
 import {
   createDiaryGroup,
@@ -143,7 +144,7 @@ async function handleLarkMessage(
   harnessManager: HarnessManager,
 ): Promise<void> {
   larkLog.info(
-    `收到消息 from=${msg.senderId} type=${msg.chatType} chat=${msg.chatId} content=${msg.content}`,
+    `收到消息 from=${msg.senderId} type=${msg.chatType} chat=${msg.chatId} contentLen=${msg.content.length}`,
   );
   if (!cmdCtx.ownerOpenId) {
     if (msg.chatType !== "p2p") return;
@@ -163,37 +164,40 @@ async function handleLarkMessage(
     bootLog.info(`已推送首次欢迎引导 to=${msg.senderId}`);
   }
 
+  const effectiveMsg = await withInteractiveCardContentFallback(msg, channel);
+  larkLog.debug(`消息详情: ${effectiveMsg.content}`);
+
   const ingested = toIngestedMessage(
-    msg,
-    resolveLarkConversationType(msg, registry),
+    effectiveMsg,
+    resolveLarkConversationType(effectiveMsg, registry),
   );
 
-  const { handled } = await handleCommand(msg, cmdCtx);
+  const { handled } = await handleCommand(effectiveMsg, cmdCtx);
   if (handled) {
     larkLog.info("命令已处理");
     return;
   }
 
-  let resolvedType = registry.getType(msg.chatId);
-  if (!resolvedType && msg.chatType === "p2p") {
-    registry.register(msg.chatId, "dm");
+  let resolvedType = registry.getType(effectiveMsg.chatId);
+  if (!resolvedType && effectiveMsg.chatType === "p2p") {
+    registry.register(effectiveMsg.chatId, "dm");
     resolvedType = "dm";
   }
 
   if (!resolvedType) {
-    await channel.send(msg.chatId, {
+    await channel.send(effectiveMsg.chatId, {
       text: "这个群还没有注册为日记群或其它受管会话，已忽略本条消息。",
     });
     return;
   }
 
-  const lens = parseLens(msg.content);
+  const lens = parseLens(effectiveMsg.content);
   if (lens && resolvedType !== "diary") {
-    const lensChatType = msg.threadId || resolvedType === "notification"
+    const lensChatType = effectiveMsg.threadId || resolvedType === "notification"
       ? "thread"
       : resolvedType;
     await handleLensMessage(
-      msg,
+      effectiveMsg,
       ingested,
       channel,
       harnessManager,
@@ -203,32 +207,109 @@ async function handleLarkMessage(
     return;
   }
 
-  if (msg.threadId) {
-    await handleChatMessage(msg, ingested, channel, harnessManager, "thread");
+  if (effectiveMsg.threadId) {
+    await handleChatMessage(effectiveMsg, ingested, channel, harnessManager, "thread");
   } else if (resolvedType === "diary") {
     await handleDiaryMessage(
-      msg,
+      effectiveMsg,
       ingested,
       channel,
       harnessManager,
-      isDiaryEntryMessage(msg) ? "entry" : "reply",
+      isDiaryEntryMessage(effectiveMsg) ? "entry" : "reply",
     );
   } else if (resolvedType === "notification") {
     const handledNotification = await handleNotificationMessage(
-      msg,
+      effectiveMsg,
       ingested,
       channel,
       harnessManager,
     );
     if (!handledNotification) {
-      await channel.send(msg.chatId, {
+      await channel.send(effectiveMsg.chatId, {
         text: "这条通知群消息没有关联到知识卡片，已忽略。",
       });
     }
   } else if (resolvedType === "topic") {
-    await handleChatMessage(msg, ingested, channel, harnessManager, "topic");
+    await handleChatMessage(effectiveMsg, ingested, channel, harnessManager, "topic");
   } else {
     await handleChatMessage(msg, ingested, channel, harnessManager, "dm");
+  }
+}
+
+async function withInteractiveCardContentFallback(
+  msg: NormalizedMessage,
+  channel: ReturnType<typeof initChannel>,
+): Promise<NormalizedMessage> {
+  if (!msg.content.includes("[interactive card]")) return msg;
+
+  try {
+    const items = await channel.fetchRawMessage(msg.messageId);
+    const interactiveItems = items.filter((item) => item.msg_type === "interactive");
+    larkLog.info(
+      `诊断卡片 raw message=${msg.messageId} rawType=${msg.rawContentType} total=${items.length} interactive=${interactiveItems.length} types=${summarizeMessageTypes(items)}`,
+    );
+
+    const cardTexts = interactiveItems
+      .map((item) => extractInteractiveCardText(item.body?.content ?? ""))
+      .filter((text): text is string => Boolean(text))
+      .map((text) => text.trim());
+    const beforePlaceholders = countInteractiveCardPlaceholders(msg.content);
+    const content = replaceInteractiveCardPlaceholders(msg.content, cardTexts).trim();
+    if (!content) {
+      larkLog.info(`诊断卡片 raw 未提取到文本 message=${msg.messageId}`);
+      return msg;
+    }
+
+    larkLog.info(
+      `卡片正文已从 raw 恢复 message=${msg.messageId} cards=${cardTexts.length} placeholders=${beforePlaceholders}->${countInteractiveCardPlaceholders(content)} chars=${content.length}`,
+    );
+    return { ...msg, content };
+  } catch (err) {
+    larkLog.warn(
+      `诊断卡片 raw 拉取失败 message=${msg.messageId} rawType=${msg.rawContentType} error=${formatLogError(err)}`,
+    );
+    return msg;
+  }
+}
+
+function countInteractiveCardPlaceholders(content: string): number {
+  return content.match(/\[interactive card\]/g)?.length ?? 0;
+}
+
+function replaceInteractiveCardPlaceholders(content: string, cardTexts: string[]): string {
+  let index = 0;
+  return content.replace(/\[interactive card\]/g, (placeholder) => {
+    const text = cardTexts[index++];
+    return text || placeholder;
+  });
+}
+
+function summarizeMessageTypes(items: ApiMessageItem[]): string {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const type = item.msg_type ?? "unknown";
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([type, count]) => `${type}:${count}`).join(",");
+}
+
+function formatLogError(err: unknown): string {
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+function extractInteractiveCardText(rawContent: string): string | null {
+  const parsed = safeJsonParse(rawContent);
+  if (!parsed) return null;
+
+  const text = larkCardToText(parsed);
+  return text || null;
+}
+
+function safeJsonParse(value: string): unknown | null {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
   }
 }
 

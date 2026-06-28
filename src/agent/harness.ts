@@ -8,6 +8,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Model } from "@earendil-works/pi-ai";
 import type { LarkChannel } from "@larksuite/channel";
 import type Database from "better-sqlite3";
+import { join, relative, isAbsolute } from "node:path";
 import { DiaryService, type EpisodeSource } from "../diary/service.js";
 import { MemoryService } from "../memory/service.js";
 import { MessageService } from "../storage/messages.js";
@@ -28,17 +29,19 @@ import { createSearchMemoryTool } from "./tools/search-memory.js";
 import { createSendCheckinTool } from "./tools/send-checkin.js";
 import { createKnowledgeTools } from "./tools/knowledge.js";
 import { isWebSearchConfigured } from "./tools/web-search.js";
-import { genId, businessDateKey, businessFileTimestamp } from "../utils.js";
+import { genId, businessDateKey, businessFileTimestamp, nowISO } from "../utils.js";
 import type { AgentChatType, SessionPolicyConfig } from "../config.js";
-import { DEFAULT_PROFILE } from "../config.js";
+import { DEFAULT_PROFILE, loadSetting } from "../config.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import type { StoredMessage } from "../storage/messages.js";
 import type { Clock } from "../clock.js";
 import { systemClock } from "../clock.js";
 import { logger } from "../log.js";
+import { SessionRegistry, type AgentSessionRow } from "./sessionRegistry.js";
 
 const distillLog = logger("distill");
 const taskLog = logger("schedule-agent");
+const harnessLog = logger("harness");
 
 // 一段会话窗口的用户输入总字数低于此值，视为寒暄/确认类废会话，关会话时不单独蒸馏。
 const MIN_DISTILL_USER_CHARS = 80;
@@ -57,6 +60,8 @@ export interface HarnessEntry {
   segmentStartedAt: string | null;
   segmentEndedAt: string | null;
   currentEpisodeSource: EpisodeSource | null;
+  /** dm/topic/thread/diary 这类被恢复索引追踪的 session 才有；schedule/distill 等内部 scope 为 null。 */
+  sessionRowId: string | null;
 }
 
 export interface HarnessModelProfile {
@@ -87,6 +92,24 @@ export interface RunTaskOptions {
   profile?: string;
 }
 
+/** 哪些 chat type 进 agent_sessions 恢复索引：交互式会话才进。 */
+function isPersistentChatType(chatType: AgentChatType): boolean {
+  return chatType === "dm" || chatType === "topic" || chatType === "thread" || chatType === "diary";
+}
+
+interface CreateEntryInternalOptions {
+  runId?: string;
+  activeToolNames?: string[];
+  extraTools?: AgentTool<any>[];
+  profileName?: string;
+  /** schedule / distill 等一次性任务用：直接覆写 system prompt 字符串。 */
+  systemPromptOverride?: string;
+  /** 是否把此 session 登记进 SessionRegistry（仅 dm/topic/thread/diary 应为 true）。 */
+  registerToRegistry: boolean;
+  /** 从已有 row 恢复时传入。 */
+  reopenRow?: AgentSessionRow;
+}
+
 export class HarnessManager {
   private entries = new Map<string, HarnessEntry>();
   private env: NodeExecutionEnv;
@@ -95,15 +118,20 @@ export class HarnessManager {
   private memoryService: MemoryService;
   private messageService: MessageService;
   private vaultService: VaultService;
+  private sessionRegistry: SessionRegistry;
   private db: Database.Database;
+  private sessionsDir: string;
   private profiles: HarnessManagerOptions["profiles"];
   private chatTypes: HarnessManagerOptions["chatTypes"];
   private channel?: LarkChannel;
   private registry?: ChatRegistry;
   private clock: Clock;
+  /** per-scope 串行队列：保证 getOrCreateForMessage / harness.prompt / idle close / reply-target reopen 不并发。 */
+  private scopeLocks = new Map<string, Promise<unknown>>();
 
   constructor(opts: HarnessManagerOptions) {
     this.db = opts.db;
+    this.sessionsDir = opts.sessionsDir;
     this.profiles = opts.profiles;
     this.chatTypes = opts.chatTypes;
     this.clock = opts.clock ?? systemClock;
@@ -117,6 +145,7 @@ export class HarnessManager {
     this.memoryService = new MemoryService(opts.db, this.clock);
     this.messageService = new MessageService(opts.db, this.clock);
     this.vaultService = new VaultService();
+    this.sessionRegistry = new SessionRegistry(opts.db);
     this.channel = opts.channel;
     this.registry = opts.registry;
   }
@@ -137,13 +166,29 @@ export class HarnessManager {
     return this.vaultService;
   }
 
+  getSessionRegistry(): SessionRegistry {
+    return this.sessionRegistry;
+  }
+
   getClock(): Clock {
     return this.clock;
   }
 
+  /**
+   * 内部 / 兜底入口。
+   *
+   * 飞书 dm / topic / thread / diary 消息走 getOrCreateForMessage，会写恢复索引；
+   * 这里只服务两类场景：
+   *   1. 内部一次性 scope（schedule / distill / daily_memory / consolidation / knowledge_index）。
+   *   2. backfill / diary entry 重入：scope 已经在内存里时直接复用现有 entry。
+   *
+   * 命中现有 entry 时只刷活动时间；未命中且不是交互式 chatType 时新建一个不登记 registry 的 entry。
+   * 未命中且是交互式 chatType 时也允许新建（只对 backfill 等带自定义 sessionScope 的路径开放），
+   * 同样不登记 registry——避免一次性导入污染恢复索引。
+   */
   async getOrCreate(
     scopeId: string,
-    chatType: HarnessEntry["chatType"],
+    chatType: AgentChatType,
     opts: {
       runId?: string;
       activeToolNames?: string[];
@@ -158,7 +203,108 @@ export class HarnessManager {
       existing.runId = opts.runId ?? existing.runId;
       return existing;
     }
-    return this.createEntry(scopeId, chatType, opts);
+    return this.createEntry(scopeId, chatType, {
+      runId: opts.runId,
+      activeToolNames: opts.activeToolNames,
+      extraTools: opts.extraTools,
+      profileName: opts.profileName,
+      systemPromptOverride: opts.systemPrompt,
+      registerToRegistry: false,
+    });
+  }
+
+  /**
+   * 飞书消息入口：dm / topic / thread / diary 走这条。
+   * 按设计文档的恢复算法选择 active / reply-target / unclosed / new。
+   *
+   * 注意：此方法自己拿一次 scope lock；如果 caller 已经在 `withScopeLock` 里，
+   * 应该用 `getOrCreateForMessageInLock` 跳过外层锁，避免同 scope 自锁死。
+   */
+  async getOrCreateForMessage(
+    scopeId: string,
+    chatType: AgentChatType,
+    message: { replyTo?: string | null; rootId?: string | null },
+  ): Promise<HarnessEntry> {
+    if (!isPersistentChatType(chatType)) {
+      throw new Error(`chatType=${chatType} 不应走 getOrCreateForMessage`);
+    }
+    return this.withScopeLock(scopeId, () =>
+      this.getOrCreateForMessageInLock(scopeId, chatType, message),
+    );
+  }
+
+  /** 已在 scope lock 内的入口；与 `getOrCreateForMessage` 等价但不再加锁。 */
+  async getOrCreateForMessageInLock(
+    scopeId: string,
+    chatType: AgentChatType,
+    message: { replyTo?: string | null; rootId?: string | null },
+  ): Promise<HarnessEntry> {
+    if (!isPersistentChatType(chatType)) {
+      throw new Error(`chatType=${chatType} 不应走 getOrCreateForMessage`);
+    }
+    const active = this.entries.get(scopeId);
+    if (active) {
+      active.lastActivityAt = Date.now();
+      return active;
+    }
+
+    const anchorMessageId = message.replyTo ?? message.rootId ?? null;
+    const replyTarget = anchorMessageId
+      ? this.sessionRegistry.findByMessageId(anchorMessageId)
+      : null;
+    if (replyTarget && replyTarget.scope_id === scopeId) {
+      return await this.reopenForReplyTarget(replyTarget);
+    }
+
+    const unclosed = this.sessionRegistry.findUnclosedForScope(scopeId);
+    if (unclosed) {
+      if (!this.isUnclosedExpired(unclosed)) {
+        return await this.restoreUnclosed(unclosed);
+      }
+      // 过期：只标 closed，不补跑停机期间错过的蒸馏。
+      this.sessionRegistry.markClosed(unclosed.id);
+    }
+
+    return await this.createEntry(scopeId, chatType, {
+      registerToRegistry: true,
+    });
+  }
+
+  /** 用户消息记录到 message_session_entries，并扩展 segment window。 */
+  recordUserMessage(
+    scopeId: string,
+    messageId: string,
+    occurredAt: string,
+  ): void {
+    const entry = this.entries.get(scopeId);
+    if (!entry || !entry.sessionRowId) return;
+    this.sessionRegistry.recordMessageEntry({
+      messageId,
+      sessionId: entry.sessionRowId,
+      entryId: null,
+      scopeId,
+      role: "user",
+      occurredAt,
+    });
+    this.sessionRegistry.updateSegmentWindow(entry.sessionRowId, occurredAt);
+  }
+
+  /** assistant 平台消息记录到 message_session_entries，便于将来按该 message 反查 session。 */
+  recordAssistantMessage(
+    scopeId: string,
+    messageId: string,
+    occurredAt: string,
+  ): void {
+    const entry = this.entries.get(scopeId);
+    if (!entry || !entry.sessionRowId) return;
+    this.sessionRegistry.recordMessageEntry({
+      messageId,
+      sessionId: entry.sessionRowId,
+      entryId: null,
+      scopeId,
+      role: "assistant",
+      occurredAt,
+    });
   }
 
   recordActivity(scopeId: string, createdAt: string): void {
@@ -175,25 +321,48 @@ export class HarnessManager {
   }
 
   async resetSession(scopeId: string): Promise<void> {
-    await this.distillScopeEpisode(scopeId);
-    this.entries.delete(scopeId);
+    await this.withScopeLock(scopeId, async () => {
+      await this.distillScopeEpisode(scopeId);
+      const entry = this.entries.get(scopeId);
+      if (entry?.sessionRowId) {
+        this.sessionRegistry.markClosed(entry.sessionRowId);
+      }
+      this.entries.delete(scopeId);
+    });
   }
 
   async compactSession(scopeId: string): Promise<void> {
-    await this.distillScopeEpisode(scopeId);
-    const entry = this.entries.get(scopeId);
-    if (entry) await entry.harness.compact();
+    await this.withScopeLock(scopeId, async () => {
+      await this.distillScopeEpisode(scopeId);
+      const entry = this.entries.get(scopeId);
+      if (!entry) return;
+      if (entry.sessionRowId) {
+        this.sessionRegistry.markClosed(entry.sessionRowId);
+        // compact 之后内存还在，但 SQL 已 closed：清掉内存条目，下条消息走冷启动新建。
+        // 这样语义清晰：compact 等于强制关现有 segment。
+      }
+      this.entries.delete(scopeId);
+      await entry.harness.compact();
+    });
   }
 
   async cleanupIdle(policy: SessionPolicyConfig): Promise<void> {
     const now = Date.now();
-    for (const [scopeId, entry] of this.entries) {
-      const item = policy[policyKeyForChatType(entry.chatType)];
-      if (!item.autoClose || !item.idleMinutes) continue;
-      if (now - entry.lastActivityAt > item.idleMinutes * 60_000) {
+    const candidateScopes = Array.from(this.entries.keys());
+    for (const scopeId of candidateScopes) {
+      // 逐 scope 取锁，在锁内重新判断：避免 prompt 正在跑时把同一 session 误关。
+      await this.withScopeLock(scopeId, async () => {
+        const entry = this.entries.get(scopeId);
+        if (!entry) return;
+        const item = policy[policyKeyForChatType(entry.chatType)];
+        if (!item.autoClose || !item.idleMinutes) return;
+        if (now - entry.lastActivityAt <= item.idleMinutes * 60_000) return;
         await this.distillScopeEpisode(scopeId);
+        if (entry.sessionRowId) {
+          this.sessionRegistry.markClosed(entry.sessionRowId);
+        }
         this.entries.delete(scopeId);
-      }
+      });
     }
   }
 
@@ -352,35 +521,131 @@ ${JSON.stringify(files, null, 2)}
     }
   }
 
-  private async createEntry(
-    scopeId: string,
-    chatType: HarnessEntry["chatType"],
-    opts: {
-      runId?: string;
-      activeToolNames?: string[];
-      extraTools?: AgentTool<any>[];
-      profileName?: string;
-      systemPrompt?: string;
-    },
-  ): Promise<HarnessEntry> {
-    const session = await this.repo.create({
-      cwd: `${chatType}/${businessDateKey().slice(0, 7)}`,
+  /**
+   * reply-target 冷启动恢复：
+   *   1. 在锁内对同 scope 其它未过期 open session 做 best-effort 蒸馏。
+   *   2. 单事务先 close others 再 reopen target。
+   *   3. 物理打开 JSONL 并装入新 harness。
+   */
+  private async reopenForReplyTarget(target: AgentSessionRow): Promise<HarnessEntry> {
+    const others = this.sessionRegistry.findOtherOpenSessions(
+      target.scope_id,
+      target.id,
+    );
+    for (const other of others) {
+      if (!shouldDistillOnClose(other.chat_type)) continue;
+      if (this.isUnclosedExpired(other)) continue;
+      if (!other.segment_started_at || !other.segment_ended_at) continue;
+      const source: EpisodeSource = {
+        conversationId: other.scope_id,
+        messageId: null,
+        startedAt: other.segment_started_at,
+        endedAt: other.segment_ended_at,
+      };
+      try {
+        if (!this.diaryService.hasEpisodeForScopeWindow(source)) {
+          const messages = this.messageService.getConversationMessages(
+            source.conversationId,
+            source.startedAt,
+            source.endedAt,
+          );
+          if (segmentWorthDistilling(messages)) {
+            await this.runEpisodeDistill(source, messages);
+          }
+        }
+      } catch (err) {
+        // 蒸馏失败只 warn，不阻断 reopen。
+        distillLog.warn(
+          `reopen 抢占同 scope 蒸馏失败 scope=${other.scope_id} session=${other.id}`,
+          err,
+        );
+      }
+    }
+
+    // SQL 事务严格按设计 4 步顺序：close others → open target。
+    // target 原本 closed 才清 segment（开启新窗口）；target 已 open 时是幂等 reopen，
+    // 保留尚未蒸馏的 segment 窗口。
+    this.sessionRegistry.reopenWithExclusivity(target.id, target.scope_id, {
+      resetSegment: target.status === "closed",
     });
 
-    const profileName = opts.profileName ?? this.chatTypes[chatType] ?? DEFAULT_PROFILE;
-    const profile = this.profiles[profileName];
-    if (!profile) {
-      throw new Error(`未找到模型档位: ${profileName}（chatType=${chatType}）`);
+    const refreshed = this.sessionRegistry.get(target.id)!;
+    return await this.createEntry(refreshed.scope_id, refreshed.chat_type, {
+      registerToRegistry: true,
+      reopenRow: refreshed,
+    });
+  }
+
+  /** 进程重启恢复 unclosed session：保留原 segment window，只刷活动时间。 */
+  private async restoreUnclosed(row: AgentSessionRow): Promise<HarnessEntry> {
+    return await this.createEntry(row.scope_id, row.chat_type, {
+      registerToRegistry: true,
+      reopenRow: row,
+    });
+  }
+
+  private isUnclosedExpired(row: AgentSessionRow): boolean {
+    const item = this.getPolicyForChatType(row.chat_type);
+    if (!item) return false;
+    if (!item.autoClose || !item.idleMinutes) return false;
+    const last = Date.parse(row.last_activity_at);
+    if (!Number.isFinite(last)) return false;
+    return Date.now() - last > item.idleMinutes * 60_000;
+  }
+
+  /**
+   * 当前进程的 session policy。第一版直接读 setting；
+   * 为避免循环依赖在 createEntry 时把 policy 注进来太重，先按需 lazy 读。
+   */
+  private getPolicyForChatType(chatType: AgentChatType) {
+    if (!this.cachedPolicy) {
+      this.cachedPolicy = loadSetting().sessions.policies;
     }
+    return this.cachedPolicy[policyKeyForChatType(chatType)];
+  }
+  private cachedPolicy?: SessionPolicyConfig;
+
+  private async createEntry(
+    scopeId: string,
+    chatType: AgentChatType,
+    opts: CreateEntryInternalOptions,
+  ): Promise<HarnessEntry> {
+    const reopenRow = opts.reopenRow;
+    const cwd = reopenRow
+      ? reopenRow.cwd
+      : `${chatType}/${businessDateKey().slice(0, 7)}`;
+
+    // 选 profile：恢复时优先用归档 profile，缺失则降级到当前配置默认。
+    let profileName = opts.profileName ?? reopenRow?.profile_name ?? this.chatTypes[chatType] ?? DEFAULT_PROFILE;
+    let profile = this.profiles[profileName];
+    if (!profile) {
+      const fallback = this.chatTypes[chatType] ?? DEFAULT_PROFILE;
+      harnessLog.warn(
+        `恢复 session=${reopenRow?.id ?? "(new)"} 找不到 profile=${profileName}，降级为 ${fallback}`,
+      );
+      profileName = fallback;
+      profile = this.profiles[profileName];
+      if (!profile) {
+        throw new Error(`未找到模型档位: ${profileName}（chatType=${chatType}）`);
+      }
+    }
+
+    const session = reopenRow
+      ? await this.repo.open({
+          id: "",
+          createdAt: "",
+          cwd: reopenRow.cwd,
+          path: this.absSessionPath(reopenRow.session_path),
+        })
+      : await this.repo.create({ cwd });
+
+    // 拿到 metadata 反推绝对路径，写库时落相对 sessionsDir。
+    const metadata = await session.getMetadata();
+    const absolutePath = metadata.path;
+    const relativePath = this.toRelativeSessionPath(absolutePath);
 
     const isConsolidation = chatType === "consolidation";
     const canEditProfile = isConsolidation;
-    this.memoryService.syncEditableMemoryFiles();
-    const snapshot = buildMemorySnapshot(this.db, this.memoryService);
-    const systemPrompt = opts.systemPrompt ?? appendSessionInstructions(
-      buildSystemPrompt(snapshot),
-      chatType,
-    );
 
     let entry: HarnessEntry;
 
@@ -417,13 +682,23 @@ ${JSON.stringify(files, null, 2)}
       allTools.push(tool);
     }
 
-    const activeToolNames = opts.activeToolNames ?? activeToolNamesFor(chatType);
-    const unknownToolNames = activeToolNames.filter(
-      (name) => !allTools.some((tool) => tool.name === name),
-    );
-    if (unknownToolNames.length > 0) {
-      throw new Error(`未知工具：${unknownToolNames.join(", ")}`);
-    }
+    // active tool 名解析：先用恢复行的存档，过滤掉已不存在的工具；空则降级到当前默认。
+    const activeToolNames = this.resolveActiveToolNames({
+      explicit: opts.activeToolNames,
+      reopenRow,
+      chatType,
+      allTools,
+    });
+
+    const memoryService = this.memoryService;
+    const db = this.db;
+    const useDynamicSystemPrompt = !opts.systemPromptOverride;
+
+    const dynamicSystemPrompt = (): string => {
+      memoryService.syncEditableMemoryFiles();
+      const snapshot = buildMemorySnapshot(db, memoryService);
+      return appendSessionInstructions(buildSystemPrompt(snapshot), chatType);
+    };
 
     const harness = new AgentHarness({
       env: this.env,
@@ -431,10 +706,38 @@ ${JSON.stringify(files, null, 2)}
       model: profile.model,
       tools: allTools,
       activeToolNames,
-      systemPrompt,
+      systemPrompt: useDynamicSystemPrompt
+        ? () => dynamicSystemPrompt()
+        : opts.systemPromptOverride!,
       getApiKeyAndHeaders: async () => ({ apiKey: profile.apiKey }),
       streamOptions: profile.streamOptions,
     });
+
+    let sessionRowId: string | null = null;
+    let segmentStartedAt: string | null = null;
+    let segmentEndedAt: string | null = null;
+    if (opts.registerToRegistry) {
+      if (reopenRow) {
+        // unclosed 重启恢复：保留 segment window；reopenWithExclusivity 已清掉抢占场景的窗口。
+        sessionRowId = reopenRow.id;
+        segmentStartedAt = reopenRow.segment_started_at;
+        segmentEndedAt = reopenRow.segment_ended_at;
+        // 进程内重启需要刷新活动时间到现在，避免下一次过期判定基于停机前的旧值。
+        this.sessionRegistry.touchActivity(reopenRow.id, nowISO());
+      } else {
+        const row = this.sessionRegistry.create({
+          id: genId("agent_sess"),
+          sessionPath: relativePath,
+          cwd,
+          scopeId,
+          chatType,
+          profileName: profile.name,
+          modelId: profile.model.id,
+          activeToolNames,
+        });
+        sessionRowId = row.id;
+      }
+    }
 
     entry = {
       harness,
@@ -446,13 +749,94 @@ ${JSON.stringify(files, null, 2)}
       lastActivityAt: Date.now(),
       activeToolNames,
       toolGuard: installToolGuard(harness),
-      segmentStartedAt: null,
-      segmentEndedAt: null,
+      segmentStartedAt,
+      segmentEndedAt,
       currentEpisodeSource: null,
+      sessionRowId,
     };
 
     this.entries.set(scopeId, entry);
     return entry;
+  }
+
+  private resolveActiveToolNames(opts: {
+    explicit?: string[];
+    reopenRow?: AgentSessionRow;
+    chatType: AgentChatType;
+    allTools: AgentTool[];
+  }): string[] {
+    const allNames = new Set(opts.allTools.map((t) => t.name));
+
+    if (opts.explicit !== undefined) {
+      const unknown = opts.explicit.filter((name) => !allNames.has(name));
+      if (unknown.length > 0) {
+        throw new Error(`未知工具：${unknown.join(", ")}`);
+      }
+      return opts.explicit;
+    }
+
+    if (opts.reopenRow) {
+      try {
+        const stored = JSON.parse(opts.reopenRow.active_tool_names_json) as unknown;
+        if (Array.isArray(stored) && stored.every((v) => typeof v === "string")) {
+          const filtered: string[] = [];
+          for (const name of stored) {
+            if (allNames.has(name)) filtered.push(name);
+            else harnessLog.warn(
+              `恢复 session=${opts.reopenRow.id} 工具 ${name} 已不存在，丢弃`,
+            );
+          }
+          if (filtered.length > 0) return filtered;
+          harnessLog.warn(
+            `恢复 session=${opts.reopenRow.id} 工具集过滤后为空，降级为当前默认`,
+          );
+        } else {
+          harnessLog.warn(
+            `恢复 session=${opts.reopenRow.id} active_tool_names_json 不是字符串数组，降级`,
+          );
+        }
+      } catch (err) {
+        harnessLog.warn(
+          `恢复 session=${opts.reopenRow.id} active_tool_names_json 解析失败，降级`,
+          err,
+        );
+      }
+    }
+
+    const defaultNames = activeToolNamesFor(opts.chatType);
+    const unknown = defaultNames.filter((name) => !allNames.has(name));
+    if (unknown.length > 0) {
+      throw new Error(`未知工具：${unknown.join(", ")}`);
+    }
+    return defaultNames;
+  }
+
+  private toRelativeSessionPath(absolutePath: string): string {
+    if (!isAbsolute(absolutePath)) return absolutePath;
+    return relative(this.sessionsDir, absolutePath);
+  }
+
+  private absSessionPath(stored: string): string {
+    return isAbsolute(stored) ? stored : join(this.sessionsDir, stored);
+  }
+
+  /**
+   * per-scope 串行队列：尾部接一个 promise，让后来者等前面跑完。
+   * 飞书 handler 把 getOrCreateForMessage + harness.prompt + 消息登记整体包在这里，
+   * 保证同 scope 的并发消息、idle close、reply-target reopen、`/new` 不互相穿插。
+   */
+  withScopeLock<T>(scopeId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.scopeLocks.get(scopeId) ?? Promise.resolve();
+    const next = prev.catch(() => undefined).then(fn);
+    // 占位 promise 用 catch 包一层，防止失败被 caller 漏接导致后续永远卡住。
+    const released = next.catch(() => undefined);
+    this.scopeLocks.set(scopeId, released);
+    released.finally(() => {
+      if (this.scopeLocks.get(scopeId) === released) {
+        this.scopeLocks.delete(scopeId);
+      }
+    });
+    return next;
   }
 
   private resolveTaskProfileName(profileName?: string): string {

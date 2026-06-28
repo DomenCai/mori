@@ -6,7 +6,8 @@ import type { MutableClock } from "../clock.js";
 import { type StorylineChangeSummary } from "./service.js";
 import { genId, businessDateKey, textLineChanges, weekKey } from "../utils.js";
 import { logger } from "../log.js";
-import { renderWeeklyRecordCard, renderWeeklyFriendCard } from "../lark/cards.js";
+import { larkCardToText } from "../lark/cardText.js";
+import { renderWeeklyRecordCard, renderMarkdownCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 
 const log = logger("consolidation");
@@ -182,21 +183,17 @@ ${JSON.stringify(currentVisibleStorylines, null, 2)}
         delta: formatLineChangeCounts(r.old_content, r.new_content),
       }));
 
-    const recordText = buildWeeklyRecordText(
-      recapText,
+    const recordCard = renderWeeklyRecordCard({
+      weekKey: wk,
+      recap: recapText,
       profileChanges,
-      storylineChanges,
-    );
+      storylineChanges: compactStorylineChanges(storylineChanges),
+    });
+    const recordText = larkCardToText(recordCard);
     if (sendCards) {
       if (!channel || !registry) {
         throw new Error("sendCards=true 需要 channel 和 registry");
       }
-      const recordCard = renderWeeklyRecordCard({
-        weekKey: wk,
-        recap: recapText,
-        profileChanges,
-        storylineChanges: compactStorylineChanges(storylineChanges),
-      });
       for (const chatId of diaryChats) {
         const sent = await channel.send(chatId, { card: recordCard });
         messageService.saveAssistantMessage({
@@ -204,7 +201,7 @@ ${JSON.stringify(currentVisibleStorylines, null, 2)}
           source: "lark",
           conversationId: larkChatConversationId(chatId),
           conversationType: "diary",
-          content: `本周记录（${wk}）\n\n${recordText}`,
+          content: recordText,
         });
       }
     }
@@ -284,29 +281,6 @@ function formatLineChangeCounts(oldText: string, newText: string): string {
   return `+${changes.added.length}/-${changes.removed.length}`;
 }
 
-function buildWeeklyRecordText(
-  recap: string,
-  profileChanges: Array<{ reason: string; delta: string }>,
-  storylineChanges: StorylineChangeSummary[],
-): string {
-  const parts = [recap.trim()];
-  if (storylineChanges.length > 0) {
-    parts.push(
-      `📌 叙事线索变化（${storylineChanges.length}）\n` +
-        storylineChanges
-          .map((c) => `- ${c.operation} ${c.title} → ${c.status}（${c.reason}）`)
-          .join("\n"),
-    );
-  }
-  if (profileChanges.length > 0) {
-    parts.push(
-      `🧠 身份画像变更（${profileChanges.length}）\n` +
-        profileChanges.map((c) => `- ${c.reason}\n  ${c.delta}`).join("\n"),
-    );
-  }
-  return parts.join("\n\n");
-}
-
 function extractWeeklyRecap(raw: string): string {
   const text = raw.trim();
   const tagMatch = /<weekly_record>\s*([\s\S]*?)\s*<\/weekly_record>/i.exec(text);
@@ -368,7 +342,7 @@ async function runFriendAgent(opts: {
     if (!friendText) return;
 
     if (sendCards && channel) {
-      const friendCard = renderWeeklyFriendCard(friendText);
+      const friendCard = renderMarkdownCard(friendText);
       for (const chatId of diaryChats) {
         const sent = await channel.send(chatId, { card: friendCard });
         messageService.saveAssistantMessage({

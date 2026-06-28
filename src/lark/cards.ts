@@ -239,7 +239,7 @@ export function renderWeeklyRecordCard(data: WeeklyRecordCardData): object {
 
   if (data.storylineChanges.length > 0) {
     const lines = data.storylineChanges
-      .map((c) => `- ${c.operation} ${c.title} → ${c.status}（${c.reason}）`)
+      .map((c) => `- ${c.operation} ${c.title} → ${c.status}`)
       .join("\n");
     elements.push(markdown(`**📌 叙事线索变化（${data.storylineChanges.length}）**\n${lines}`));
   }
@@ -258,15 +258,6 @@ export function renderWeeklyRecordCard(data: WeeklyRecordCardData): object {
     schema: "2.0",
     config: { summary: { content: `这周记录（${data.weekKey}）` } },
     body: { elements },
-  };
-}
-
-// 卡片 2「朋友的话」：纯散文，没有标题/bullet，就是朋友看完你这周后说的话。
-export function renderWeeklyFriendCard(message: string): object {
-  return {
-    schema: "2.0",
-    config: { summary: { content: "朋友的话" } },
-    body: { elements: [markdown(message.trim() || "……")] },
   };
 }
 
@@ -617,11 +608,9 @@ function pushObservations(lines: string[], value: unknown): void {
       if (!item || typeof item !== "object") return "";
       const record = item as Record<string, unknown>;
       const text = typeof record.text === "string" ? record.text : "";
-      const evidence = typeof record.evidence === "string" ? record.evidence : "";
       const tag = typeof record.tag === "string" ? record.tag : "";
-      if (!text && !evidence) return "";
-      const title = tag ? `${index + 1}. [${tag}] ${truncate(text, 280)}` : `${index + 1}. ${truncate(text, 280)}`;
-      return evidence ? `${title}\n   evidence: ${truncate(evidence, 360)}` : title;
+      if (!text) return "";
+      return  tag ? `${index + 1}. [${tag}] ${truncate(text, 280)}` : `${index + 1}. ${truncate(text, 280)}`;
     })
     .filter(Boolean);
   if (observations.length > 0) {
