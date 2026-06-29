@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { LarkChannel } from "@larksuite/channel";
-import type { HarnessManager } from "../agent/harness.js";
+import type { AgentService } from "../agent/index.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import type { MutableClock } from "../clock.js";
 import { type StorylineChangeSummary } from "./service.js";
@@ -15,18 +15,18 @@ const MAX_EPISODE_TRANSCRIPT_CHARS = 2000;
 
 export async function runConsolidation(
   db: Database.Database,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   channel: LarkChannel,
   registry: ChatRegistry,
   since?: string,
 ): Promise<void> {
-  const now = harnessManager.getClock().now();
+  const now = agentService.getClock().now();
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() - 7);
   const sinceIso = since ?? weekStart.toISOString();
   await runWeeklyConsolidationForWindow({
     db,
-    harnessManager,
+    agentService,
     channel,
     registry,
     since: sinceIso,
@@ -38,7 +38,7 @@ export async function runConsolidation(
 
 export async function runWeeklyConsolidationForWindow(opts: {
   db: Database.Database;
-  harnessManager: HarnessManager;
+  agentService: AgentService;
   since: string;
   until: string;
   clock?: MutableClock;
@@ -49,7 +49,7 @@ export async function runWeeklyConsolidationForWindow(opts: {
 }): Promise<void> {
   const {
     db,
-    harnessManager,
+    agentService,
     since,
     until,
     clock,
@@ -63,8 +63,8 @@ export async function runWeeklyConsolidationForWindow(opts: {
     clock.set(new Date(new Date(until).getTime() - 5 * 60_000));
   }
 
-  const diaryService = harnessManager.getDiaryService();
-  const memoryService = harnessManager.getMemoryService();
+  const diaryService = agentService.getDiaryService();
+  const memoryService = agentService.getMemoryService();
   const episodes = diaryService.getEpisodesInWindow(since, until);
   const sinceDateKey = businessDateKey(new Date(since));
   const untilDateKey = businessDateKey(new Date(until));
@@ -83,10 +83,6 @@ export async function runWeeklyConsolidationForWindow(opts: {
   }
 
   const runId = genId("run");
-  const scopeId = `consolidation_${runId}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "consolidation", {
-    runId,
-  });
 
   const episodeSummaries = episodes
     .map((ep) => {
@@ -155,80 +151,68 @@ ${JSON.stringify(currentVisibleStorylines, null, 2)}
 
 标签外不要写任何内容。标签内只写周记录正文；不要写画像评估、推理过程、结论说明或工具调用说明。`;
 
-  let captured = "";
-  const unsubscribe = entry.harness.subscribe(async (event) => {
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
-      captured += event.assistantMessageEvent.delta;
-    }
-    if (event.type === "tool_execution_end") {
-      captured = "";
-    }
-  });
-
   const wk = weekKey(new Date(since));
   const diaryChats = sendCards ? registry?.getDiaryChats() ?? [] : [];
-  const messageService = harnessManager.getMessageService();
-  try {
-    captured = "";
-    await entry.harness.prompt(mechanicalPrompt);
-    const recapText = extractWeeklyRecap(captured);
+  const messageService = agentService.getMessageService();
 
-    const profileChanges = memoryService
-      .getProfileRevisionsByRun(runId)
-      .map((r) => ({
-        reason: r.reason,
-        delta: formatLineChangeCounts(r.old_content, r.new_content),
-      }));
+  // captured 是主轮 prompt 的最终段文本（每次 tool_execution_end 重置一次）；
+  // 业务侧再用 <weekly_record> 标签提取周记录正文。
+  const mainResult = await agentService.runConsolidationMain(mechanicalPrompt, {
+    runId,
+    defaultTools: ["search_memory"],
+  });
+  const captured = mainResult.text;
+  const recapText = extractWeeklyRecap(captured);
 
-    const recordCard = renderWeeklyRecordCard({
-      weekKey: wk,
-      recap: recapText,
-      profileChanges,
-      storylineChanges: compactStorylineChanges(storylineChanges),
-    });
-    const recordText = larkCardToText(recordCard);
-    if (sendCards) {
-      if (!channel || !registry) {
-        throw new Error("sendCards=true 需要 channel 和 registry");
-      }
-      for (const chatId of diaryChats) {
-        const sent = await channel.send(chatId, { card: recordCard });
-        messageService.saveAssistantMessage({
-          id: larkMessageId(sent.messageId)!,
-          source: "lark",
-          conversationId: larkChatConversationId(chatId),
-          conversationType: "diary",
-          content: recordText,
-        });
-      }
+  const profileChanges = memoryService
+    .getProfileRevisionsByRun(runId)
+    .map((r) => ({
+      reason: r.reason,
+      delta: formatLineChangeCounts(r.old_content, r.new_content),
+    }));
+
+  const recordCard = renderWeeklyRecordCard({
+    weekKey: wk,
+    recap: recapText,
+    profileChanges,
+    storylineChanges: compactStorylineChanges(storylineChanges),
+  });
+  const recordText = larkCardToText(recordCard);
+  if (sendCards) {
+    if (!channel || !registry) {
+      throw new Error("sendCards=true 需要 channel 和 registry");
     }
-
-    db.prepare(
-      "INSERT OR REPLACE INTO weekly_summaries (id, week_key, summary, friend_note, created_at) VALUES (?, ?, ?, NULL, ?)",
-    ).run(genId("ws"), wk, recordText, harnessManager.getClock().nowISO());
-    db.prepare(
-      `INSERT INTO agent_runs (id, scope_id, command, model, tool_calls_json, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      runId,
-      scopeId,
-      "weekly_consolidation",
-      entry.modelId,
-      "[]",
-      "completed",
-      harnessManager.getClock().nowISO(),
-    );
-  } finally {
-    unsubscribe();
-    await harnessManager.resetSession(scopeId);
+    for (const chatId of diaryChats) {
+      const sent = await channel.send(chatId, { card: recordCard });
+      messageService.saveAssistantMessage({
+        id: larkMessageId(sent.messageId)!,
+        source: "lark",
+        conversationId: larkChatConversationId(chatId),
+        conversationType: "diary",
+        content: recordText,
+      });
+    }
   }
+
+  db.prepare(
+    "INSERT OR REPLACE INTO weekly_summaries (id, week_key, summary, friend_note, created_at) VALUES (?, ?, ?, NULL, ?)",
+  ).run(genId("ws"), wk, recordText, agentService.getClock().nowISO());
+  db.prepare(
+    `INSERT INTO agent_runs (id, scope_id, command, model, tool_calls_json, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    runId,
+    `consolidation_${runId}`,
+    "weekly_consolidation",
+    mainResult.modelId,
+    "[]",
+    "completed",
+    agentService.getClock().nowISO(),
+  );
 
   if (friendRound) {
     await runFriendAgent({
-      harnessManager,
+      agentService,
       db,
       episodes,
       wk,
@@ -236,6 +220,7 @@ ${JSON.stringify(currentVisibleStorylines, null, 2)}
       channel,
       diaryChats,
       sendCards,
+      memoryService,
     });
   }
 }
@@ -305,7 +290,7 @@ function extractWeeklyRecap(raw: string): string {
 }
 
 async function runFriendAgent(opts: {
-  harnessManager: HarnessManager;
+  agentService: AgentService;
   db: Database.Database;
   episodes: Array<Record<string, any>>;
   wk: string;
@@ -313,61 +298,59 @@ async function runFriendAgent(opts: {
   channel?: LarkChannel;
   diaryChats: string[];
   sendCards: boolean;
+  memoryService: import("./service.js").MemoryService;
 }): Promise<void> {
-  const { harnessManager, db, episodes, wk, runId, channel, diaryChats, sendCards } =
-    opts;
-  const diaryService = harnessManager.getDiaryService();
-  const messageService = harnessManager.getMessageService();
-  const scopeId = `consolidation_friend_${runId}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "consolidation", {
+  const {
+    agentService,
+    db,
+    episodes,
+    wk,
     runId,
-    activeToolNames: [],
-  });
+    channel,
+    diaryChats,
+    sendCards,
+    memoryService,
+  } = opts;
+  const diaryService = agentService.getDiaryService();
+  const messageService = agentService.getMessageService();
+  const weekTranscript = buildWeekUserTranscript(diaryService, episodes);
+  const priorNotes = getPriorFriendNotes(db, wk, 4);
 
-  let captured = "";
-  const unsubscribe = entry.harness.subscribe(async (event) => {
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
-      captured += event.assistantMessageEvent.delta;
-    }
-  });
-
+  let friendText = "";
   try {
-    const weekTranscript = buildWeekUserTranscript(diaryService, episodes);
-    const priorNotes = getPriorFriendNotes(db, wk, 4);
-    await entry.harness.prompt(buildFriendPrompt(weekTranscript, priorNotes));
-    const friendText = captured.trim();
-    if (!friendText) return;
-
-    if (sendCards && channel) {
-      const friendCard = renderMarkdownCard(friendText);
-      for (const chatId of diaryChats) {
-        const sent = await channel.send(chatId, { card: friendCard });
-        messageService.saveAssistantMessage({
-          id: larkMessageId(sent.messageId)!,
-          source: "lark",
-          conversationId: larkChatConversationId(chatId),
-          conversationType: "diary",
-          content: friendText,
-        });
-      }
-    }
-
-    db.prepare(
-      "UPDATE weekly_summaries SET friend_note = ? WHERE week_key = ?",
-    ).run(friendText, wk);
+    // friend 轮工具集为空：只说话不调工具。
+    friendText = await agentService.runConsolidationFriend(
+      buildFriendPrompt(weekTranscript, priorNotes),
+      { runId },
+    );
   } catch (err) {
     log.warn(`朋友轮失败，已保留本周记录：${err}`);
-  } finally {
-    unsubscribe();
-    await harnessManager.resetSession(scopeId);
+    return;
   }
+
+  if (!friendText) return;
+
+  if (sendCards && channel) {
+    const friendCard = renderMarkdownCard(friendText);
+    for (const chatId of diaryChats) {
+      const sent = await channel.send(chatId, { card: friendCard });
+      messageService.saveAssistantMessage({
+        id: larkMessageId(sent.messageId)!,
+        source: "lark",
+        conversationId: larkChatConversationId(chatId),
+        conversationType: "diary",
+        content: friendText,
+      });
+    }
+  }
+
+  db.prepare(
+    "UPDATE weekly_summaries SET friend_note = ? WHERE week_key = ?",
+  ).run(friendText, wk);
 }
 
 function buildWeekUserTranscript(
-  diaryService: ReturnType<HarnessManager["getDiaryService"]>,
+  diaryService: ReturnType<AgentService["getDiaryService"]>,
   episodes: Array<Record<string, any>>,
 ): string {
   const parts = episodes

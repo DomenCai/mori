@@ -1,7 +1,7 @@
 import type { LarkChannel, NormalizedMessage } from "@larksuite/channel";
 import type Database from "better-sqlite3";
 import { ChatRegistry } from "./chatRegistry.js";
-import type { HarnessManager } from "../agent/harness.js";
+import type { AgentService } from "../agent/index.js";
 import { larkConversationId } from "./ingest.js";
 import { loadSchedulesConfig, type SchedulesConfig } from "../schedule/config.js";
 import {
@@ -19,7 +19,7 @@ export interface CommandContext {
   channel: LarkChannel;
   db: Database.Database;
   registry: ChatRegistry;
-  harnessManager: HarnessManager;
+  agentService: AgentService;
   ownerOpenId: string;
 }
 
@@ -148,7 +148,7 @@ async function handleNew(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.harnessManager.resetSession(larkConversationId(msg));
+  await ctx.agentService.resetSession(larkConversationId(msg));
   await ctx.channel.send(msg.chatId, { text: "🔄 会话已重置" });
   return { handled: true };
 }
@@ -157,7 +157,7 @@ async function handleCompact(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  await ctx.harnessManager.compactSession(larkConversationId(msg));
+  await ctx.agentService.compactSession(larkConversationId(msg));
   await ctx.channel.send(msg.chatId, { text: "📦 上下文已压缩" });
   return { handled: true };
 }
@@ -167,7 +167,7 @@ async function handleProfile(
   ctx: CommandContext,
 ): Promise<CommandResult> {
   const rest = msg.content.trim().slice("/profile".length).trim();
-  const memory = ctx.harnessManager.getMemoryService();
+  const memory = ctx.agentService.getMemoryService();
   memory.syncEditableMemoryFiles();
 
   if (!rest) {
@@ -200,7 +200,7 @@ async function handleChapter(
   ctx: CommandContext,
   args: string[],
 ): Promise<CommandResult> {
-  const memory = ctx.harnessManager.getMemoryService();
+  const memory = ctx.agentService.getMemoryService();
   memory.syncEditableMemoryFiles();
 
   if (args.length === 0) {
@@ -238,7 +238,7 @@ async function handleStorylines(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
-  const items = ctx.harnessManager.getMemoryService().getVisibleStorylines();
+  const items = ctx.agentService.getMemoryService().getVisibleStorylines();
   if (items.length === 0) {
     await ctx.channel.send(msg.chatId, { text: "暂无 storylines" });
     return { handled: true };
@@ -252,7 +252,7 @@ async function handleStoryline(
   ctx: CommandContext,
   args: string[],
 ): Promise<CommandResult> {
-  const memory = ctx.harnessManager.getMemoryService();
+  const memory = ctx.agentService.getMemoryService();
   const [first] = args;
   if (!first) return sendStorylineUsage(msg, ctx);
 
@@ -288,7 +288,7 @@ async function handleDream(
   ctx: CommandContext,
   args: string[],
 ): Promise<CommandResult> {
-  const memory = ctx.harnessManager.getMemoryService();
+  const memory = ctx.agentService.getMemoryService();
   const input = args[0];
   if (input && /^\d{4}-\d{2}-\d{2}$/.test(input)) {
     const run = memory.getDailyMemoryRun(input);
@@ -422,6 +422,6 @@ async function handleConsolidate(
   await ctx.channel.send(msg.chatId, { text: "⏳ 开始手动合并…" });
   // 由 schedule 层的 consolidation 逻辑处理
   const { runConsolidation } = await import("../memory/consolidation.js");
-  await runConsolidation(ctx.db, ctx.harnessManager, ctx.channel, ctx.registry);
+  await runConsolidation(ctx.db, ctx.agentService, ctx.channel, ctx.registry);
   return { handled: true };
 }

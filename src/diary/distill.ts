@@ -1,5 +1,4 @@
-import type { HarnessManager } from "../agent/harness.js";
-import type { HarnessEntry } from "../agent/harness.js";
+import type { BaseAgent, AgentService } from "../agent/index.js";
 import type { IngestedMessage } from "../ingest/message.js";
 import type { DiaryService, EpisodeSource } from "./service.js";
 
@@ -9,18 +8,18 @@ export interface DistillDiaryEntryResult {
 }
 
 export async function distillDiaryEntry(opts: {
-  harnessManager: HarnessManager;
+  agentService: AgentService;
   message: IngestedMessage;
   sessionScope?: string;
 }): Promise<DistillDiaryEntryResult> {
-  const { harnessManager, message } = opts;
+  const { agentService, message } = opts;
   const sessionScope = opts.sessionScope ?? message.conversationId;
-  const entry = await harnessManager.getOrCreate(sessionScope, "diary");
-  const diaryService = harnessManager.getDiaryService();
-  const messageService = harnessManager.getMessageService();
+  const agent = await agentService.getOrCreate(sessionScope, "diary");
+  const diaryService = agentService.getDiaryService();
+  const messageService = agentService.getMessageService();
 
   messageService.saveUserMessage(message);
-  harnessManager.recordActivity(sessionScope, message.occurredAt);
+  agentService.recordActivity(sessionScope, message.occurredAt);
 
   const source: EpisodeSource = {
     conversationId: message.conversationId,
@@ -29,11 +28,11 @@ export async function distillDiaryEntry(opts: {
     endedAt: message.occurredAt,
   };
 
-  entry.currentEpisodeSource = source;
+  agent.setEpisodeSource(source);
 
   let promptError: string | null = null;
   try {
-    await entry.harness.prompt(formatDiaryEntryPrompt(message));
+    await agent.prompt(formatDiaryEntryPrompt(message));
   } catch (err) {
     promptError = formatError(err);
   }
@@ -49,15 +48,15 @@ export async function distillDiaryEntry(opts: {
       };
     }
 
-    return await ensureDiaryEpisode(diaryService, entry, source, message.content);
+    return await ensureDiaryEpisode(diaryService, agent, source, message.content);
   } finally {
-    entry.currentEpisodeSource = null;
+    agent.setEpisodeSource(null);
   }
 }
 
 async function ensureDiaryEpisode(
   diaryService: DiaryService,
-  entry: HarnessEntry,
+  agent: BaseAgent,
   source: EpisodeSource,
   content: string,
 ): Promise<DistillDiaryEntryResult> {
@@ -66,7 +65,7 @@ async function ensureDiaryEpisode(
   }
 
   try {
-    await entry.harness.prompt(`你刚才没有为这篇日记写 episode。请只调用 write_episode 工具完成蒸馏，不要输出面向用户的回复文本。
+    await agent.prompt(`你刚才没有为这篇日记写 episode。请只调用 write_episode 工具完成蒸馏，不要输出面向用户的回复文本。
 
 原日记：
 ${content}`);

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { LarkChannel } from "@larksuite/channel";
-import type { HarnessManager } from "../agent/harness.js";
+import type { AgentService } from "../agent/index.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import type { Clock, MutableClock } from "../clock.js";
 import { logger } from "../log.js";
@@ -22,26 +22,16 @@ const log = logger("daily_memory");
 export const NUDGE_AFTER_SILENT_DAYS = 3;
 export const MIN_NUDGE_INTERVAL_DAYS = 7;
 
-const DREAM_TOOL_NAMES = [
-  "search_memory",
-  "get_storyline",
-  "create_storyline",
-  "advance_storyline",
-  "set_storyline_status",
-  "merge_storylines",
-];
-const NUDGE_TOOL_NAMES = ["send_checkin"];
-
 export async function runDailyMemory(
   db: Database.Database,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   _channel: LarkChannel,
   registry: ChatRegistry,
 ): Promise<void> {
-  const dateKey = previousBusinessDateKey(harnessManager.getClock().now());
+  const dateKey = previousBusinessDateKey(agentService.getClock().now());
   await runDailyMemoryForDate({
     db,
-    harnessManager,
+    agentService,
     registry,
     dateKey,
     nudge: true,
@@ -50,17 +40,17 @@ export async function runDailyMemory(
 
 export async function runDailyMemoryForDate(opts: {
   db: Database.Database;
-  harnessManager: HarnessManager;
+  agentService: AgentService;
   registry?: ChatRegistry;
   dateKey: string;
   clock?: MutableClock;
   nudge: boolean;
 }): Promise<void> {
-  const { db, harnessManager, registry, dateKey, clock, nudge } = opts;
+  const { db, agentService, registry, dateKey, clock, nudge } = opts;
   if (clock) {
     clock.set(new Date(businessDateStart(dateKey).getTime() + 30 * 60 * 60_000));
   }
-  const memoryService = harnessManager.getMemoryService();
+  const memoryService = agentService.getMemoryService();
   const existing = memoryService.getDailyMemoryRun(dateKey);
   if (existing) {
     log.info(`daily_memory ${dateKey} 已存在，跳过`);
@@ -81,7 +71,7 @@ export async function runDailyMemoryForDate(opts: {
     let dreamSummary: string | null = null;
     if (episodes.length > 0) {
       dreamSummary = await runDreamAgent(
-        harnessManager,
+        agentService,
         memoryService,
         run.id,
         dateKey,
@@ -94,11 +84,11 @@ export async function runDailyMemoryForDate(opts: {
     let nudgeEvaluated = false;
     let nudgeSent = false;
     let nudgeText: string | null = null;
-    const nudgeContext = buildNudgeContext(db, memoryService, harnessManager.getClock());
-    if (nudge && shouldRunNudgeAgent(memoryService, nudgeContext.silentDays, harnessManager.getClock())) {
+    const nudgeContext = buildNudgeContext(db, memoryService, agentService.getClock());
+    if (nudge && shouldRunNudgeAgent(memoryService, nudgeContext.silentDays, agentService.getClock())) {
       nudgeEvaluated = true;
       const result = await runNudgeAgent(
-        harnessManager,
+        agentService,
         memoryService,
         run.id,
         dateKey,
@@ -139,31 +129,15 @@ export async function runDailyMemoryForDate(opts: {
 }
 
 async function runDreamAgent(
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   memoryService: MemoryService,
   runId: string,
   dateKey: string,
   consumedBeforeIso: string,
   episodes: Array<Record<string, any>>,
 ): Promise<string> {
-  const scopeId = `daily_memory_dream_${dateKey}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "daily_memory", {
-    runId,
-    activeToolNames: DREAM_TOOL_NAMES,
-  });
-  let captured = "";
-  const unsubscribe = entry.harness.subscribe(async (event) => {
-    if (
-      event.type === "message_update" &&
-      event.assistantMessageEvent.type === "text_delta"
-    ) {
-      captured += event.assistantMessageEvent.delta;
-    }
-  });
-
-  try {
-    // 不变量：dream_agent 永远不能激活 send_checkin；nudge_agent 永远不能激活写记忆工具。
-    await entry.harness.prompt(`# daily_memory / dream_agent
+  // 不变量：dream_agent 永远不能激活 send_checkin；nudge_agent 永远不能激活写记忆工具。
+  return agentService.runDailyMemoryDream(`# daily_memory / dream_agent
 
 你是内部叙事整理 agent，只维护 storylines。
 
@@ -200,41 +174,20 @@ ${JSON.stringify(memoryService.getRecentDailyMemoryRuns(5), null, 2)}
 当前 profile（只读）：
 ${memoryService.getProfile()}
 
-请调用必要工具完成叙事线更新。工具调用结束后，用三五句客观话概括今天 dream 处理了什么。`);
-    return captured.trim();
-  } finally {
-    unsubscribe();
-    await harnessManager.resetSession(scopeId);
-  }
+请调用必要工具完成叙事线更新。工具调用结束后，用三五句客观话概括今天 dream 处理了什么。`, {
+    runId,
+    scopeId: `daily_memory_dream_${dateKey}`,
+  });
 }
 
 async function runNudgeAgent(
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   memoryService: MemoryService,
   runId: string,
   dateKey: string,
   context: NudgeContext,
 ): Promise<{ sent: boolean; text: string | null }> {
-  const scopeId = `daily_memory_nudge_${dateKey}`;
-  const entry = await harnessManager.getOrCreate(scopeId, "daily_memory", {
-    runId,
-    activeToolNames: NUDGE_TOOL_NAMES,
-  });
-  let sent = false;
-  let text: string | null = null;
-  const unsubscribe = entry.harness.subscribe(async (event) => {
-    if (event.type !== "tool_execution_end" || event.toolName !== "send_checkin" || event.isError) {
-      return;
-    }
-    const details = (event.result as { details?: unknown } | undefined)?.details;
-    if (!details || typeof details !== "object") return;
-    const record = details as Record<string, unknown>;
-    sent = record.sent === true;
-    text = typeof record.text === "string" ? record.text : null;
-  });
-
-  try {
-    await entry.harness.prompt(`# daily_memory / nudge_agent
+  return agentService.runDailyMemoryNudge(`# daily_memory / nudge_agent
 
 你是内部轻触达判断 agent。默认不发，不发也是正确结果。
 
@@ -260,12 +213,10 @@ ${JSON.stringify({
 }, null, 2)}
 \`\`\`
 
-判断今天是否真的需要轻触达。`);
-    return { sent, text };
-  } finally {
-    unsubscribe();
-    await harnessManager.resetSession(scopeId);
-  }
+判断今天是否真的需要轻触达。`, {
+    runId,
+    scopeId: `daily_memory_nudge_${dateKey}`,
+  });
 }
 
 interface NudgeContext {

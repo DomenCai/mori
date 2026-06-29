@@ -14,7 +14,7 @@ import {
   relative,
   resolve as resolvePath,
 } from "node:path";
-import type { HarnessManager } from "../agent/harness.js";
+import type { AgentService } from "../agent/index.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { runConsolidation } from "../memory/consolidation.js";
 import { runDailyMemory } from "../memory/daily-memory.js";
@@ -71,7 +71,7 @@ interface AgentTaskSpec {
 export function initSchedules(
   db: Database.Database,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   registry: ChatRegistry,
   setting: SettingConfig,
 ): Cron[] {
@@ -91,7 +91,7 @@ export function initSchedules(
           if (!current || current.kind !== "builtin") return;
           log.info(`触发 builtin: ${schedule.id}`);
           try {
-            await runBuiltin(current, db, channel, harnessManager, registry);
+            await runBuiltin(current, db, channel, agentService, registry);
           } catch (err) {
             log.error(`${current.builtin} 失败:`, err);
           }
@@ -140,7 +140,7 @@ export function initSchedules(
               channel,
               registry,
               db,
-              harnessManager,
+              agentService,
               setting.script.defaults,
             );
           } catch (err) {
@@ -163,14 +163,14 @@ export function initSchedules(
         log.info(`跳过已停用 knowledge_index: ${knowledgeIndex.id}`);
         return;
       }
-      runKnowledgeIndexIfNeeded(current.trigger, harnessManager).catch(
+      runKnowledgeIndexIfNeeded(current.trigger, agentService).catch(
         (err) => {
           log.error("知识地图刷新失败:", err);
         },
       );
     }, setting.knowledge.index.checkIntervalMs);
     if (knowledgeIndex.enabled) {
-      runKnowledgeIndexIfNeeded(knowledgeIndex.trigger, harnessManager).catch((err) => {
+      runKnowledgeIndexIfNeeded(knowledgeIndex.trigger, agentService).catch((err) => {
         log.error("知识地图刷新失败:", err);
       });
     }
@@ -184,7 +184,7 @@ export async function runScheduleNow(
   scheduleId: string,
   db: Database.Database,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   registry: ChatRegistry,
   setting: SettingConfig,
 ): Promise<void> {
@@ -195,7 +195,7 @@ export async function runScheduleNow(
 
   log.info(`手动触发定时任务: ${schedule.id}`);
   if (schedule.kind === "builtin") {
-    await runBuiltin(schedule, db, channel, harnessManager, registry);
+    await runBuiltin(schedule, db, channel, agentService, registry);
     return;
   }
 
@@ -215,7 +215,7 @@ export async function runScheduleNow(
     channel,
     registry,
     db,
-    harnessManager,
+    agentService,
     setting.script.defaults,
   );
 }
@@ -224,16 +224,16 @@ async function runBuiltin(
   schedule: ScheduleDefinition,
   db: Database.Database,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   registry: ChatRegistry,
 ): Promise<void> {
   if (schedule.kind !== "builtin") return;
   if (schedule.builtin === "weekly_summary") {
-    await runConsolidation(db, harnessManager, channel, registry);
+    await runConsolidation(db, agentService, channel, registry);
   } else if (schedule.builtin === "daily_memory") {
-    await runDailyMemory(db, harnessManager, channel, registry);
+    await runDailyMemory(db, agentService, channel, registry);
   } else if (schedule.builtin === "knowledge_index") {
-    await harnessManager.runKnowledgeIndexBuiltin();
+    await agentService.runKnowledgeIndexBuiltin();
   }
 }
 
@@ -257,12 +257,12 @@ async function runAgentSchedule(
   channel: LarkChannel,
   registry: ChatRegistry,
   db: Database.Database,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   scriptDefaults: ScriptRuntimeConfig,
 ): Promise<void> {
   const runtime = mergeScriptRuntime(scriptDefaults, schedule.runtime);
   const result = await withTimeout(
-    runAgentScheduleInner(schedule, harnessManager),
+    runAgentScheduleInner(schedule, agentService),
     runtime.timeoutMs,
     `agent 超时：${schedule.id}`,
   );
@@ -271,7 +271,7 @@ async function runAgentSchedule(
 
 async function runAgentScheduleInner(
   schedule: AgentSchedule,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<ScheduleResult> {
   if (schedule.prompt && schedule.script) {
     throw new Error(`agent ${schedule.id} 不能同时配置 prompt 和 script`);
@@ -280,7 +280,7 @@ async function runAgentScheduleInner(
     if (schedule.deliver?.inbox) {
       throw new Error(`agent inline prompt 不允许写入 Inbox：${schedule.id}`);
     }
-    const text = await harnessManager.runTask(schedule.prompt, {
+    const text = await agentService.runTask(schedule.prompt, {
       profile: schedule.profile,
       system: schedule.system ?? "bare",
       tools: schedule.tools ?? [],
@@ -290,7 +290,7 @@ async function runAgentScheduleInner(
   if (schedule.script) {
     const task = await loadAgentTask(schedule.script);
     if (task === null) return null;
-    const text = await harnessManager.runTask(task.prompt, {
+    const text = await agentService.runTask(task.prompt, {
       profile: schedule.profile,
       system: task.system ?? "bare",
       tools: task.tools ?? [],
@@ -578,10 +578,10 @@ async function createNotificationChat(
 
 async function runKnowledgeIndexIfNeeded(
   trigger: KnowledgeIndexTrigger,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<void> {
   if (shouldRunKnowledgeIndex(trigger)) {
-    await harnessManager.runKnowledgeIndexBuiltin();
+    await agentService.runKnowledgeIndexBuiltin();
   }
 }
 

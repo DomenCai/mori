@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dbPath as defaultDbPath } from "../config.js";
@@ -8,7 +8,12 @@ import type { Clock } from "../clock.js";
 import { systemClock } from "../clock.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_SCHEMA_VERSION = 1;
+
+interface DbMigration {
+  version: number;
+  path: string;
+  sql: string;
+}
 
 let _db: Database.Database | null = null;
 
@@ -22,23 +27,42 @@ export function getDb(path: string = defaultDbPath): Database.Database {
 
 export function initDb(db: Database.Database, clock: Clock = systemClock): void {
   const schema = readSchema();
-  db.exec(schema);
-  applyDbMigrations(db);
+  const migrations = readMigrations();
+  if (hasApplicationTables(db)) {
+    applyDbMigrations(db, migrations);
+  } else {
+    db.exec(schema);
+    db.pragma(`user_version = ${latestSchemaVersion(migrations)}`);
+  }
   ensureProfileRow(db, clock);
   ensureChapterRow(db, clock);
 }
 
-function applyDbMigrations(db: Database.Database): void {
+function applyDbMigrations(
+  db: Database.Database,
+  migrations: DbMigration[],
+): void {
   const version = db.pragma("user_version", { simple: true }) as number;
-  if (version >= DB_SCHEMA_VERSION) return;
+  const targetVersion = latestSchemaVersion(migrations);
+  if (version >= targetVersion) return;
 
   db.transaction(() => {
-    if (version < 1 && !weeklySummariesHasFriendNote(db)) {
-      db.exec("ALTER TABLE weekly_summaries ADD COLUMN friend_note TEXT");
+    for (const migration of migrations) {
+      if (version < migration.version) {
+        if (shouldSkipMigration(db, migration)) continue;
+        db.exec(migration.sql);
+      }
     }
 
-    db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+    db.pragma(`user_version = ${targetVersion}`);
   })();
+}
+
+function shouldSkipMigration(
+  db: Database.Database,
+  migration: DbMigration,
+): boolean {
+  return migration.version === 1 && weeklySummariesHasFriendNote(db);
 }
 
 function weeklySummariesHasFriendNote(db: Database.Database): boolean {
@@ -70,6 +94,17 @@ function ensureChapterRow(db: Database.Database, clock: Clock): void {
   }
 }
 
+function hasApplicationTables(db: Database.Database): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM sqlite_master
+       WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+       LIMIT 1`,
+    )
+    .get();
+  return Boolean(row);
+}
+
 function readSchema(): string {
   const candidates = [
     join(__dirname, "schema.sql"),
@@ -80,6 +115,38 @@ function readSchema(): string {
     throw new Error(`schema.sql 不存在：${candidates.join(", ")}`);
   }
   return readFileSync(path, "utf-8");
+}
+
+function readMigrations(): DbMigration[] {
+  const candidates = [
+    join(__dirname, "migrations"),
+    join(__dirname, "../../src/storage/migrations"),
+  ];
+  const dir = candidates.find((candidate) => existsSync(candidate));
+  if (!dir) {
+    throw new Error(`storage migrations 不存在：${candidates.join(", ")}`);
+  }
+
+  return readdirSync(dir)
+    .map((name) => {
+      const match = /^(\d+)_.*\.sql$/.exec(name);
+      if (!match) return null;
+      const path = join(dir, name);
+      return {
+        version: Number(match[1]),
+        path,
+        sql: readFileSync(path, "utf-8"),
+      };
+    })
+    .filter((item): item is DbMigration => Boolean(item))
+    .sort((a, b) => a.version - b.version);
+}
+
+function latestSchemaVersion(migrations: DbMigration[]): number {
+  return migrations.reduce(
+    (latest, migration) => Math.max(latest, migration.version),
+    0,
+  );
 }
 
 export function closeDb(): void {

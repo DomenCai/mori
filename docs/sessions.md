@@ -2,7 +2,7 @@
 
 Agent 对每个飞书 scope 维护一个独立对话上下文，并按 `setting.json` 的 `sessions.policies` 自动回收空闲 scope。这份文档讲清楚：什么时候算"接着上一轮聊"，什么时候算"开了个新会话"。
 
-实现见 `src/agent/harness.ts`（`HarnessManager` + `getOrCreateForMessage`）、`src/agent/sessionRegistry.ts`（恢复索引）与 `src/main.ts` 的清理定时器；配置字段见 [配置参考](configuration.md)。
+实现见 `src/agent/index.ts` 暴露的 `AgentService`、`src/agent/service.ts` 的会话选择流程、`src/agent/sessions.ts` 的恢复索引，以及 `src/lark/bot.ts` 注册的清理定时器；配置字段见 [配置参考](configuration.md)。
 
 ## scope key
 
@@ -17,7 +17,7 @@ scope key 就是 `IngestedMessage.conversationId`，是完整 scope：
 
 ## 续聊 vs 新会话
 
-`HarnessManager.getOrCreateForMessage(scopeId, chatType, message)` 按下面的顺序决定本轮 session：
+`AgentService` 收到持久型 agent（`dm` / `topic` / `thread` / `diary`）请求时，按下面的顺序决定本轮 session：
 
 1. **active harness 命中**：当前进程内存里这个 scope 还有活着的 harness，直接续。
 2. **reply-target 恢复**（冷启动场景）：消息带 `reply_to`（或 `root_id`），且这个 message id 能从 `message_session_entries` 索引定位到当前 scope 内的某个 agent session，则 reopen 那条 session；reopen 前会关掉同 scope 其它 open session（不变量：同一 scope 同时只有一个 open）。
@@ -88,14 +88,14 @@ SQLite 两张表（见 `src/storage/schema.sql`）：
 
 ## 并发边界
 
-同一 scope 的 `getOrCreateForMessage`、`harness.prompt`、idle close、`/new`、`/compact` 与 reply-target reopen 都在同一个 per-scope 串行队列里跑。这条约束防止两类状态分裂：
+同一 scope 的 session 选择、`agent.prompt`、idle close、`/new`、`/compact` 与 reply-target reopen 都在同一个 per-scope 串行队列里跑。这条约束防止两类状态分裂：
 
 - prompt 正在跑时 idle cleanup 把同一个 session 标 closed。
-- 冷启动 reply-target reopen 与 unclosed session 恢复同时发生，导致 SQLite open session 与 `HarnessManager.entries` 不一致。
+- 冷启动 reply-target reopen 与 unclosed session 恢复同时发生，导致 SQLite open session 与 `AgentService` 的 active agent 池不一致。
 
 ## system prompt 刷新
 
-每个用户 turn 都重新生成 system prompt（`syncEditableMemoryFiles` → `buildMemorySnapshot` → `buildSystemPrompt` → `appendSessionInstructions`），以让长寿命主题群也能拿到之后更新的 profile、chapter、storylines、知识地图。
+每个用户 turn 都重新生成 system prompt（`syncEditableMemoryFiles` → `buildMemorySnapshot` → `buildSystemPrompt` → 具体 agent 的会话 tail），以让长寿命主题群也能拿到之后更新的 profile、chapter、storylines、知识地图。
 
 为了在记忆源不变时维持 provider prefix cache：
 

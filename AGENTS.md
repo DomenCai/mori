@@ -8,7 +8,7 @@ This is a Node.js 22+ TypeScript ESM service for a Feishu-first personal agent. 
 
 - `pnpm install` installs dependencies; use pnpm because the lockfile and package manager are pinned.
 - `pnpm dev` runs `tsx watch src/main.ts` with `MORI_DEV=1`, so runtime state is read from local `data/`.
-- `pnpm build` runs `tsc`, type-checks the project, and writes `dist/`.
+- `pnpm build` runs `tsc`, copies `src/storage/schema.sql` and `src/storage/migrations/*.sql` into `dist/storage/`, writes `dist/build-info.json`, and produces the compiled `dist/`.
 - `pnpm start` runs the compiled daemon from `dist/main.js`; run `pnpm build` first.
 
 There is currently no dedicated test or lint script. Use `pnpm build` as the minimum verification before opening a PR.
@@ -18,6 +18,8 @@ There is currently no dedicated test or lint script. Use `pnpm build` as the min
 Use TypeScript with `strict` mode and ESM `NodeNext` imports. Include `.js` extensions in relative runtime imports, matching existing files such as `./storage/db.js`. Follow the current style: 2-space indentation, semicolons, double quotes, named exports, and clear service-style classes. Keep modules focused on one responsibility and avoid adding abstraction layers unless there are multiple real implementations.
 
 Agent harness 的工具集在 `getOrCreate` / `createEntry` 时一次定死，会话存活期间不要再调 `harness.setActiveTools` 改它——改工具集会让整段 prompt 缓存失效（cacheRead 归零、全量重写）。要按轮限制能调哪些工具，用 `agent/toolGuard.ts`：创建时设默认禁用集，每轮 `block` / `reset`，只在调用层拦截、不动工具定义。
+
+SQLite 结构管理：`src/storage/schema.sql` 保存新库完整初始结构，后续升级 SQL 放在 `src/storage/migrations/*.sql`，文件名前缀数字作为 `PRAGMA user_version` 版本。`src/storage/db.ts` 负责发现、排序和执行 SQL 文件，不把新表或索引 DDL 内联进 TypeScript；`scripts/copy-storage-sql.mjs` 会在 build 时把这些 SQL 复制到 `dist/storage/`。
 
 ## Testing Guidelines
 

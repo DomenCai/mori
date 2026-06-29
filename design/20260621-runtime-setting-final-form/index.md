@@ -1,6 +1,6 @@
 # Runtime Setting Final Form
 
-> 日期：2026-06-21。状态：目标形态设计，待实现与审查。本文定义配置系统最终边界，后续可以直接交给 Claude 做实现前审查。
+> 日期：2026-06-21。状态：已实现。本文保留配置系统最终边界的设计推导；当前事实以 `docs/configuration.md` 和代码为准。
 
 ## 背景
 
@@ -333,4 +333,3 @@ script 默认运行限制放在 `setting.script.defaults`。单个 script schedu
 - runtime 是否没有写回 `setting.json`。
 - 是否没有引入兼容 reader、迁移层或旧字段兜底。
 - 是否没有把安全边界和工具权限误做成用户配置。
-

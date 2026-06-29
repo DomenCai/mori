@@ -1,8 +1,65 @@
-// agent_sessions 与 message_session_entries 的所有 SQL 集中在这里。
-// 只服务交互式 chat type（dm / topic / thread / diary）。
+// JSONL transcript 文件仓库 + SQLite 恢复索引集中在这里。
+import { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import type { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type Database from "better-sqlite3";
-import { nowISO } from "../utils.js";
+import { isAbsolute, join, relative } from "node:path";
+import { businessFileTimestamp, nowISO } from "../utils.js";
 import type { AgentChatType } from "../config.js";
+
+/**
+ * 创建 JsonlSessionRepo，并 hook 它的文件命名逻辑：
+ * - getSessionDir：把 cwd（chatType/月份）当相对子路径直接嵌套在 sessionsRoot 下，
+ *   而不是被默认实现编码成扁平目录名。
+ * - createSessionFilePath：文件名前缀加业务日期时间戳，便于按时间排序。
+ */
+export function createSessionRepo(
+  env: NodeExecutionEnv,
+  sessionsDir: string,
+): JsonlSessionRepo {
+  const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: sessionsDir });
+  const inner = repo as unknown as {
+    getSessionsRoot(): Promise<string>;
+    getSessionDir(cwd: string): Promise<string>;
+    createSessionFilePath(
+      cwd: string,
+      sessionId: string,
+      timestamp: string,
+    ): Promise<string>;
+  };
+  const getSessionsRoot = inner.getSessionsRoot.bind(repo);
+
+  inner.getSessionDir = async (cwd) => {
+    const joined = await env.joinPath([await getSessionsRoot(), cwd]);
+    if (!joined.ok) throw joined.error;
+    return joined.value;
+  };
+
+  inner.createSessionFilePath = async (cwd, sessionId) => {
+    const sessionDir = await inner.getSessionDir(cwd);
+    const joined = await env.joinPath([
+      sessionDir,
+      `${businessFileTimestamp()}_${sessionId}.jsonl`,
+    ]);
+    if (!joined.ok) throw joined.error;
+    return joined.value;
+  };
+
+  return repo;
+}
+
+/** 写库时把绝对 session JSONL 路径转换成 sessionsDir 相对路径。 */
+export function toRelativeSessionPath(
+  absolutePath: string,
+  sessionsDir: string,
+): string {
+  if (!isAbsolute(absolutePath)) return absolutePath;
+  return relative(sessionsDir, absolutePath);
+}
+
+/** 读库时把存的相对 session JSONL 路径还原为绝对路径。 */
+export function absSessionPath(stored: string, sessionsDir: string): string {
+  return isAbsolute(stored) ? stored : join(sessionsDir, stored);
+}
 
 export interface AgentSessionRow {
   id: string;
@@ -32,6 +89,7 @@ export interface CreateAgentSessionInput {
   activeToolNames: string[];
 }
 
+/** agent_sessions 与 message_session_entries 的所有 SQL。 */
 export class SessionRegistry {
   constructor(private db: Database.Database) {}
 

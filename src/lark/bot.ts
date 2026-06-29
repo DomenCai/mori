@@ -1,6 +1,6 @@
 import type { ApiMessageItem, CardActionEvent, NormalizedMessage } from "@larksuite/channel";
 import type Database from "better-sqlite3";
-import { HarnessManager, type HarnessModelProfile } from "../agent/harness.js";
+import { AgentService, type HarnessModelProfile } from "../agent/index.js";
 import {
   loadLarkConfig,
   saveLarkConfig,
@@ -67,7 +67,7 @@ export async function startLarkBot(
 
   const channel = initChannel(larkConfig);
   const registry = new ChatRegistry(larkConfig, saveLarkConfig);
-  const harnessManager = new HarnessManager({
+  const agentService = new AgentService({
     db,
     sessionsDir,
     profiles,
@@ -79,7 +79,7 @@ export async function startLarkBot(
     channel,
     db,
     registry,
-    harnessManager,
+    agentService,
     ownerOpenId: larkConfig.ownerOpenId ?? "",
   };
 
@@ -91,7 +91,7 @@ export async function startLarkBot(
         larkConfig,
         registry,
         channel,
-        harnessManager,
+        agentService,
       );
     },
     cardAction: async (evt: CardActionEvent) => {
@@ -107,7 +107,7 @@ export async function startLarkBot(
           evt,
           channel,
           db,
-          harnessManager,
+          agentService,
           registry,
           setting,
         )
@@ -124,9 +124,9 @@ export async function startLarkBot(
     },
   });
 
-  initSchedules(db, channel, harnessManager, registry, setting);
+  initSchedules(db, channel, agentService, registry, setting);
   setInterval(() => {
-    harnessManager.cleanupIdle(setting.sessions.policies).catch((err) => {
+    agentService.cleanupIdle(setting.sessions.policies).catch((err) => {
       bootLog.error("空闲 scope 清理失败:", err);
     });
   }, setting.sessions.sweepIntervalMs);
@@ -141,7 +141,7 @@ async function handleLarkMessage(
   larkConfig: LarkConfig,
   registry: ChatRegistry,
   channel: ReturnType<typeof initChannel>,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<void> {
   larkLog.info(
     `收到消息 from=${msg.senderId} type=${msg.chatType} chat=${msg.chatId} contentLen=${msg.content.length}`,
@@ -200,7 +200,7 @@ async function handleLarkMessage(
       effectiveMsg,
       ingested,
       channel,
-      harnessManager,
+      agentService,
       lensChatType,
       lens,
     );
@@ -208,13 +208,13 @@ async function handleLarkMessage(
   }
 
   if (effectiveMsg.threadId) {
-    await handleChatMessage(effectiveMsg, ingested, channel, harnessManager, "thread");
+    await handleChatMessage(effectiveMsg, ingested, channel, agentService, "thread");
   } else if (resolvedType === "diary") {
     await handleDiaryMessage(
       effectiveMsg,
       ingested,
       channel,
-      harnessManager,
+      agentService,
       isDiaryEntryMessage(effectiveMsg) ? "entry" : "reply",
     );
   } else if (resolvedType === "notification") {
@@ -222,7 +222,7 @@ async function handleLarkMessage(
       effectiveMsg,
       ingested,
       channel,
-      harnessManager,
+      agentService,
     );
     if (!handledNotification) {
       await channel.send(effectiveMsg.chatId, {
@@ -230,9 +230,9 @@ async function handleLarkMessage(
       });
     }
   } else if (resolvedType === "topic") {
-    await handleChatMessage(effectiveMsg, ingested, channel, harnessManager, "topic");
+    await handleChatMessage(effectiveMsg, ingested, channel, agentService, "topic");
   } else {
-    await handleChatMessage(msg, ingested, channel, harnessManager, "dm");
+    await handleChatMessage(msg, ingested, channel, agentService, "dm");
   }
 }
 
@@ -341,7 +341,7 @@ async function handleScheduleAction(
   evt: CardActionEvent,
   channel: ReturnType<typeof initChannel>,
   db: Database.Database,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   registry: ChatRegistry,
   setting: SettingConfig,
 ): Promise<boolean> {
@@ -359,7 +359,7 @@ async function handleScheduleAction(
       channel,
       scheduleId,
       db,
-      harnessManager,
+      agentService,
       registry,
       setting,
     );
@@ -391,7 +391,7 @@ async function handleRunScheduleAction(
   channel: ReturnType<typeof initChannel>,
   scheduleId: string,
   db: Database.Database,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   registry: ChatRegistry,
   setting: SettingConfig,
 ): Promise<void> {
@@ -412,7 +412,7 @@ async function handleRunScheduleAction(
           scheduleId,
           db,
           channel,
-          harnessManager,
+          agentService,
           registry,
           setting,
         );

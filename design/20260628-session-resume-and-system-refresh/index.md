@@ -2,9 +2,9 @@
 
 ## 状态
 
-需求定稿，待实现。
+2026-06-29 已按当前代码落地，待主路径手动验证。
 
-本文替代 `docs/sessions.md` 中“内存里还在 -> 续；不在了 -> 新开”的旧目标形态。当前代码仍以 `HarnessManager.entries` 这个进程内 Map 作为唯一续聊依据；本文描述下一版目标语义。
+当前实现入口见 `docs/sessions.md`、`src/agent/service.ts`、`src/agent/sessions.ts`、`src/storage/schema.sql` 和 `src/storage/migrations/002_session_resume.sql`。本文保留设计推导；若和当前 docs 或代码冲突，以 docs 和代码为准。
 
 ## 背景
 
@@ -39,7 +39,7 @@
 | 术语 | 含义 |
 |---|---|
 | scope | `IngestedMessage.conversationId`，例如 `lark:chat:<chat_id>` 或 `lark:thread:<chat_id>:<thread_id>` |
-| active harness | 当前进程内 `HarnessManager.entries` 里活着的 session |
+| active agent | 当前进程内 `AgentService` active 池里活着的 session |
 | agent session | 一个 pi-agent-core JSONL transcript |
 | unclosed session | SQLite 中状态仍为 open 的 agent session，可用于进程重启后的默认恢复 |
 | closed session | 已被 idle cleanup、`/new` 或过期检查关闭的 session；普通消息不默认恢复 |
@@ -238,7 +238,7 @@ idle cleanup sweep 不能“先扫出所有候选再批量关闭”；它应逐 
 这条约束防止两类状态分裂：
 
 - prompt 正在跑时 idle cleanup 把同一个 session 标 closed。
-- 冷启动 reply-target reopen 与 unclosed session 恢复同时发生，导致 SQLite open session 和 `HarnessManager.entries` 不一致。
+- 冷启动 reply-target reopen 与 unclosed session 恢复同时发生，导致 SQLite open session 和 `AgentService` active agent 池不一致。
 
 ## 恢复算法
 

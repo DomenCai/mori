@@ -1,10 +1,10 @@
-// 飞书消息 → harness 驱动 → 流式卡片回复。日记群、普通会话、话题和通知反应分流处理。
+// 飞书消息 → agent 驱动 → 流式卡片回复。日记群、普通会话、话题和通知反应分流处理。
 import type {
   LarkChannel,
   NormalizedMessage,
   SendOptions,
 } from "@larksuite/channel";
-import { HarnessManager, type HarnessEntry } from "../agent/harness.js";
+import { AgentService, type BaseAgent } from "../agent/index.js";
 import type { EpisodeSource } from "../diary/service.js";
 import { distillDiaryEntry } from "../diary/distill.js";
 import type { IngestedMessage } from "../ingest/message.js";
@@ -36,7 +36,7 @@ interface StreamAgentReplyOutcome {
 async function streamAgentReply(
   channel: LarkChannel,
   msg: NormalizedMessage,
-  entry: HarnessEntry,
+  agent: BaseAgent,
   runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
   log: typeof larkLog,
 ): Promise<{ messageId: string; assistantText: string; messageIds: string[]; texts: string[] }> {
@@ -53,7 +53,7 @@ async function streamAgentReply(
           let outcome: StreamAgentReplyOutcome = {};
           let lastTotalTokens = 0;
 
-          const unsubscribe = entry.harness.subscribe(async (event) => {
+          const unsubscribe = agent.subscribe(async (event) => {
             if (
               event.type === "message_update" &&
               event.assistantMessageEvent.type === "text_delta"
@@ -88,7 +88,7 @@ async function streamAgentReply(
             const elapsed = Date.now() - started;
             const metrics = {
               totalTokens: lastTotalTokens,
-              contextWindow: entry.harness.getModel().contextWindow,
+              contextWindow: agent.getModel().contextWindow,
               elapsedMs: elapsed,
             };
 
@@ -143,7 +143,7 @@ function assistantMessageText(message: unknown): string {
 async function sendAgentReplyText(
   channel: LarkChannel,
   msg: NormalizedMessage,
-  entry: HarnessEntry,
+  agent: BaseAgent,
   runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
   log: typeof larkLog,
 ): Promise<{ messageId: string; assistantText: string; messageIds: string[]; texts: string[] }> {
@@ -153,7 +153,7 @@ async function sendAgentReplyText(
   let promptError: string | null = null;
   const started = Date.now();
 
-  const unsubscribe = entry.harness.subscribe(async (event) => {
+  const unsubscribe = agent.subscribe(async (event) => {
     if (event.type === "message_end") {
       const text = assistantMessageText(event.message);
       if (text) {
@@ -213,12 +213,12 @@ export async function handleDiaryMessage(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   mode: "entry" | "reply",
 ): Promise<void> {
   const scopeId = message.conversationId;
-  await harnessManager.withScopeLock(scopeId, () =>
-    handleDiaryMessageInLock(msg, message, channel, harnessManager, mode),
+  await agentService.withScopeLock(scopeId, () =>
+    handleDiaryMessageInLock(msg, message, channel, agentService, mode),
   );
 }
 
@@ -226,29 +226,29 @@ async function handleDiaryMessageInLock(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   mode: "entry" | "reply",
 ): Promise<void> {
   const scopeId = message.conversationId;
-  const entry = await harnessManager.getOrCreateForMessageInLock(scopeId, "diary", message);
-  const messageService = harnessManager.getMessageService();
+  const agent = await agentService.getOrCreateForMessageInLock(scopeId, "diary", message);
+  const messageService = agentService.getMessageService();
   const messageTime = message.occurredAt;
   if (mode === "reply") {
     messageService.saveUserMessage(message);
-    harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
+    agentService.recordUserMessage(scopeId, message.id, message.occurredAt);
   } else {
     // entry 模式下 distillDiaryEntry 内部会 saveUserMessage，但 message_session_entries
     // 仍要由 handler 这层来登记，确保未来回复这条日记 anchor 时能命中 session。
-    harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
+    agentService.recordUserMessage(scopeId, message.id, message.occurredAt);
   }
-  harnessManager.recordActivity(scopeId, messageTime);
+  agentService.recordActivity(scopeId, messageTime);
 
   // 日记 scope 工具集恒定 [write_episode, search_memory]，不切工具（切了会炸缓存）。
   // 追问轮硬拦 write_episode；新日记轮放行（蒸馏需要它）。
   if (mode === "reply") {
-    entry.toolGuard.block(["write_episode"], "日记追问轮不写 episode");
+    agent.blockTools(["write_episode"], "日记追问轮不写 episode");
   } else {
-    entry.toolGuard.reset();
+    agent.resetTools();
   }
 
   diaryLog.info(
@@ -262,11 +262,11 @@ async function handleDiaryMessageInLock(
       return await streamAgentReply(
         channel,
         msg,
-        entry,
+        agent,
         async () => {
           if (mode === "entry") {
             const episodeResult = await distillDiaryEntry({
-              harnessManager,
+              agentService,
               message,
             });
             return {
@@ -281,15 +281,15 @@ async function handleDiaryMessageInLock(
                   : undefined,
             };
           }
-          await entry.harness.prompt(
-            await formatDiaryPrompt(message, harnessManager),
+          await agent.prompt(
+            await formatDiaryPrompt(message, agentService),
           );
           return undefined;
         },
         diaryLog,
       );
     } finally {
-      entry.currentEpisodeSource = null;
+      agent.setEpisodeSource(null);
     }
   })();
 
@@ -310,7 +310,7 @@ async function handleDiaryMessageInLock(
       rootId: message.rootId,
       occurredAt: assistantOccurredAt,
     });
-    harnessManager.recordAssistantMessage(scopeId, id, assistantOccurredAt);
+    agentService.recordAssistantMessage(scopeId, id, assistantOccurredAt);
   }
 }
 
@@ -318,12 +318,12 @@ export async function handleChatMessage(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   chatType: "dm" | "topic" | "thread",
 ): Promise<void> {
   const scopeId = message.conversationId;
-  await harnessManager.withScopeLock(scopeId, () =>
-    handleChatMessageInLock(msg, message, channel, harnessManager, chatType),
+  await agentService.withScopeLock(scopeId, () =>
+    handleChatMessageInLock(msg, message, channel, agentService, chatType),
   );
 }
 
@@ -331,27 +331,27 @@ async function handleChatMessageInLock(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   chatType: "dm" | "topic" | "thread",
 ): Promise<void> {
   const scopeId = message.conversationId;
-  const entry = await harnessManager.getOrCreateForMessageInLock(scopeId, chatType, message);
-  const messageService = harnessManager.getMessageService();
+  const agent = await agentService.getOrCreateForMessageInLock(scopeId, chatType, message);
+  const messageService = agentService.getMessageService();
   const messageTime = message.occurredAt;
   messageService.saveUserMessage(message);
-  harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
-  harnessManager.recordActivity(scopeId, messageTime);
-  await promoteKnowledgeIfNeeded(message, harnessManager);
+  agentService.recordUserMessage(scopeId, message.id, message.occurredAt);
+  agentService.recordActivity(scopeId, messageTime);
+  await promoteKnowledgeIfNeeded(message, agentService);
   larkLog.info(`处理对话 scope=${scopeId} type=${chatType}`);
 
   const stream = chatType === "dm" ? sendAgentReplyText : streamAgentReply;
   const sent = await stream(
     channel,
     msg,
-    entry,
+    agent,
     async () => {
-      await entry.harness.prompt(
-        await formatChatPrompt(message, harnessManager),
+      await agent.prompt(
+        await formatChatPrompt(message, agentService),
       );
     },
     larkLog,
@@ -374,7 +374,7 @@ async function handleChatMessageInLock(
       rootId: message.rootId,
       occurredAt: assistantOccurredAt,
     });
-    harnessManager.recordAssistantMessage(scopeId, id, assistantOccurredAt);
+    agentService.recordAssistantMessage(scopeId, id, assistantOccurredAt);
   }
 }
 
@@ -382,11 +382,11 @@ export async function handleLensMessage(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   chatType: "dm" | "topic" | "thread",
   lens: ParsedLens,
 ): Promise<void> {
-  const target = lens.body || buildLensReplyTarget(message, harnessManager);
+  const target = lens.body || buildLensReplyTarget(message, agentService);
   if (!target) {
     await channel.send(
       msg.chatId,
@@ -397,8 +397,8 @@ export async function handleLensMessage(
   }
 
   const scopeId = message.conversationId;
-  await harnessManager.withScopeLock(scopeId, () =>
-    handleLensMessageInLock(msg, message, channel, harnessManager, chatType, lens, target),
+  await agentService.withScopeLock(scopeId, () =>
+    handleLensMessageInLock(msg, message, channel, agentService, chatType, lens, target),
   );
 }
 
@@ -406,35 +406,35 @@ async function handleLensMessageInLock(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
   chatType: "dm" | "topic" | "thread",
   lens: ParsedLens,
   target: string,
 ): Promise<void> {
   const scopeId = message.conversationId;
-  const entry = await harnessManager.getOrCreateForMessageInLock(scopeId, chatType, message);
-  const messageService = harnessManager.getMessageService();
+  const agent = await agentService.getOrCreateForMessageInLock(scopeId, chatType, message);
+  const messageService = agentService.getMessageService();
   messageService.saveUserMessage(message);
-  harnessManager.recordUserMessage(scopeId, message.id, message.occurredAt);
-  harnessManager.recordActivity(scopeId, message.occurredAt);
+  agentService.recordUserMessage(scopeId, message.id, message.occurredAt);
+  agentService.recordActivity(scopeId, message.occurredAt);
   larkLog.info(`处理 lens scope=${scopeId} type=${chatType} lens=${lens.lens}`);
 
   // 透镜轮只放行 lens 允许的工具，但不切工具集（切了会炸活跃会话的缓存），
   // 改成把其余工具拦在调用层。
   const allowed = new Set(lensToolNames(lens));
-  const blocked = entry.harness
+  const blocked = agent
     .getActiveTools()
     .map((tool) => tool.name)
     .filter((name) => !allowed.has(name));
 
   try {
-    entry.toolGuard.block(blocked, "思考透镜轮只用该透镜允许的工具");
+    agent.blockTools(blocked, "思考透镜轮只用该透镜允许的工具");
     const sent = await streamAgentReply(
       channel,
       msg,
-      entry,
+      agent,
       async () => {
-        await entry.harness.prompt(formatLensPrompt(lens.lens, target));
+        await agent.prompt(formatLensPrompt(lens.lens, target));
       },
       larkLog,
     );
@@ -449,13 +449,13 @@ async function handleLensMessageInLock(
       threadId: message.threadId,
       rootId: message.rootId,
     });
-    harnessManager.recordAssistantMessage(
+    agentService.recordAssistantMessage(
       scopeId,
       larkMessageId(sent.messageId)!,
       nowISO(),
     );
   } finally {
-    entry.toolGuard.reset();
+    agent.resetTools();
   }
 }
 
@@ -468,12 +468,12 @@ export async function handleNotificationMessage(
   msg: NormalizedMessage,
   message: IngestedMessage,
   channel: LarkChannel,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<boolean> {
   if (msg.threadId) {
     return false;
   }
-  const messageService = harnessManager.getMessageService();
+  const messageService = agentService.getMessageService();
   messageService.saveUserMessage(message);
   if (!msg.replyToMessageId) {
     await channel.send(msg.chatId, {
@@ -487,14 +487,14 @@ export async function handleNotificationMessage(
     : null;
   if (!parent?.knowledge_path) return false;
 
-  const nextPath = await promoteKnowledgeIfNeeded(message, harnessManager);
+  const nextPath = await promoteKnowledgeIfNeeded(message, agentService);
   const source: EpisodeSource = {
     conversationId: message.conversationId,
     messageId: message.id,
     startedAt: message.occurredAt,
     endedAt: message.occurredAt,
   };
-  harnessManager.getDiaryService().saveFallbackEpisode(
+  agentService.getDiaryService().saveFallbackEpisode(
     source,
     `用户对知识卡片 ${nextPath ?? parent.knowledge_path} 的反应：${message.content}`,
   );
@@ -515,9 +515,9 @@ export async function handleNotificationMessage(
 
 async function formatDiaryPrompt(
   message: IngestedMessage,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<string> {
-  const replyContext = buildReplyContext(message, harnessManager);
+  const replyContext = buildReplyContext(message, agentService);
 
   return `${replyContext}<diary_followup>
 这是同一篇日记里的继续回复，不是新日记：本轮不要调用 write_episode，也不要把它当成新日记入库。保持日记群的陪伴语气和上下文连续性。
@@ -530,20 +530,20 @@ ${message.content}
 
 async function formatChatPrompt(
   message: IngestedMessage,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<string> {
-  return `${buildReplyContext(message, harnessManager)}<my_message>
+  return `${buildReplyContext(message, agentService)}<my_message>
 ${message.content}
 </my_message>`;
 }
 
 export function buildReplyContext(
   message: IngestedMessage,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): string {
   const contextMessageId = message.replyTo ?? message.rootId;
   if (!contextMessageId) return "";
-  const parent = harnessManager.getMessageService().get(contextMessageId);
+  const parent = agentService.getMessageService().get(contextMessageId);
   if (!parent) return "";
   const knowledge = parent.knowledge_path
     ? `这是对知识卡片的回应，对应知识文件：${parent.knowledge_path}\n`
@@ -557,24 +557,24 @@ ${knowledge}${parent.content}
 
 function buildLensReplyTarget(
   message: IngestedMessage,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): string {
   const contextMessageId = message.replyTo ?? message.rootId;
   if (!contextMessageId) return "";
-  const parent = harnessManager.getMessageService().get(contextMessageId);
+  const parent = agentService.getMessageService().get(contextMessageId);
   return parent?.content.trim() ?? "";
 }
 
 async function promoteKnowledgeIfNeeded(
   message: IngestedMessage,
-  harnessManager: HarnessManager,
+  agentService: AgentService,
 ): Promise<string | null> {
   if (!message.replyTo) return null;
-  const messageService = harnessManager.getMessageService();
+  const messageService = agentService.getMessageService();
   const parent = messageService.get(message.replyTo);
   if (!parent?.knowledge_path) return null;
 
-  const nextPath = harnessManager.getVaultService().promote(parent.knowledge_path, {
+  const nextPath = agentService.getVaultService().promote(parent.knowledge_path, {
     my_note: message.content,
     reacted_at: message.occurredAt || nowISO(),
   });
