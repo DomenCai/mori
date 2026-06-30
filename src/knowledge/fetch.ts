@@ -25,6 +25,8 @@ export async function fetchArticle(
         fetch_status: "failed",
       };
     }
+    const github = await fetchGitHubArticle(url);
+    if (github) return github;
     return await fetchDefuddleArticle(url);
   } catch {
     return {
@@ -33,6 +35,133 @@ export async function fetchArticle(
       source_url: url,
       fetch_status: "failed",
     };
+  }
+}
+
+interface GitHubRawTarget {
+  title: string;
+  rawUrls: string[];
+  sourceKind: "readme" | "file";
+  path?: string;
+}
+
+async function fetchGitHubArticle(url: string): Promise<KnowledgeArticle | null> {
+  const target = parseGitHubRawTarget(url);
+  if (!target) return null;
+  const { timeoutMs, userAgent } = loadSetting().http.fetch;
+  for (const rawUrl of target.rawUrls) {
+    const body = await fetchRawText(rawUrl, timeoutMs, userAgent);
+    if (!body) continue;
+    return {
+      title: target.title,
+      body: renderGitHubBody(target, rawUrl, body),
+      source_url: url,
+      fetch_status: "ok",
+    };
+  }
+  return null;
+}
+
+function parseGitHubRawTarget(input: string): GitHubRawTarget | null {
+  try {
+    const url = new URL(input);
+    if (url.hostname === "raw.githubusercontent.com") {
+      const [owner, repo, , ...pathParts] = url.pathname.split("/").filter(Boolean);
+      if (!owner || !repo || pathParts.length === 0) return null;
+      const path = decodePath(pathParts.join("/"));
+      return {
+        title: `${owner}/${repo}/${path}`,
+        rawUrls: [url.toString()],
+        sourceKind: "file",
+        path,
+      };
+    }
+
+    if (url.hostname !== "github.com") return null;
+    const [owner, repo, mode, ref, ...pathParts] = url.pathname.split("/").filter(Boolean);
+    if (!owner || !repo) return null;
+
+    if ((mode === "blob" || mode === "raw") && ref && pathParts.length > 0) {
+      const path = decodePath(pathParts.join("/"));
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${pathParts.join("/")}`;
+      return {
+        title: `${owner}/${repo}/${path}`,
+        rawUrls: [rawUrl],
+        sourceKind: "file",
+        path,
+      };
+    }
+
+    if (!mode) {
+      return {
+        title: `${owner}/${repo} README`,
+        rawUrls: [
+          `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README.md`,
+          `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/readme.md`,
+          `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README.MD`,
+          `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/README`,
+        ],
+        sourceKind: "readme",
+        path: "README.md",
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRawText(
+  url: string,
+  timeoutMs: number,
+  userAgent: string,
+): Promise<string> {
+  const response = await fetch(url, {
+    headers: { "user-agent": userAgent },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) return "";
+  return (await response.text()).trim();
+}
+
+function renderGitHubBody(target: GitHubRawTarget, rawUrl: string, body: string): string {
+  if (target.sourceKind === "readme" || isMarkdownPath(target.path)) {
+    return body;
+  }
+  return `Raw source: ${rawUrl}\n\n\`\`\`${languageForPath(target.path)}\n${body}\n\`\`\``;
+}
+
+function isMarkdownPath(path: string | undefined): boolean {
+  return Boolean(path && /\.(md|mdx|markdown)$/i.test(path));
+}
+
+function languageForPath(path: string | undefined): string {
+  const ext = path?.split(".").pop()?.toLowerCase();
+  const map: Record<string, string> = {
+    cjs: "js",
+    css: "css",
+    html: "html",
+    js: "js",
+    json: "json",
+    jsx: "jsx",
+    mjs: "js",
+    py: "python",
+    rs: "rust",
+    sh: "sh",
+    sql: "sql",
+    ts: "ts",
+    tsx: "tsx",
+    yaml: "yaml",
+    yml: "yaml",
+  };
+  return ext ? map[ext] ?? ext : "";
+}
+
+function decodePath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
   }
 }
 

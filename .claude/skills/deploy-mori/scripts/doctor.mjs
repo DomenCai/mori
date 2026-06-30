@@ -59,6 +59,18 @@ section("运行环境");
   }
 }
 
+// ── 文章抓取依赖 ──────────────────────────────────────────
+section("文章抓取依赖");
+{
+  const defuddle = sh("command -v defuddle && defuddle --version 2>/dev/null || true");
+  if (defuddle.out) {
+    const version = defuddle.out.split("\n").pop();
+    line("ok", `defuddle 已安装${version && version !== defuddle.out.split("\n")[0] ? `（${version}）` : ""}`);
+  } else {
+    line("warn", "defuddle 未安装；fetch_article 会临时走 npx defuddle，首次抓取可能很慢或超时。先询问用户，再用 pnpm add -g defuddle 安装");
+  }
+}
+
 // ── mori 安装 ─────────────────────────────────────────────
 section("mori 安装");
 let installed = false;

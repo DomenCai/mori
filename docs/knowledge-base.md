@@ -54,7 +54,7 @@ covers:
 
 | 工具 | 作用 |
 |---|---|
-| `fetch_article(url)` | 抓取 URL 为 markdown；飞书文档走 SDK，其它走 defuddle |
+| `fetch_article(url)` | 抓取 URL 为 markdown；飞书文档走 SDK，GitHub 文件/仓库 README 走 raw.githubusercontent.com，其它走 defuddle |
 | `vault_save(...)` | 新增保存 clip/manual 笔记，不允许覆写路径 |
 | `vault_search(query, k?)` | 用 `rg` 检索 vault；空 query 返回最近笔记 |
 | `vault_read(path)` | 读取单个 vault Markdown 文件全文 |
