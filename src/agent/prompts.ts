@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import { agentDir, builtinAgentDir, knowledgeIndexPath } from "../config.js";
+import { agentDir, builtinAgentDir } from "../config.js";
 import type { MemoryService } from "../memory/service.js";
 
 function stripHtmlComments(text: string): string {
@@ -21,11 +20,13 @@ function readOverridablePrompt(name: "soul.md" | "response_style.md"): string {
 function readPromptSet(): {
   soul: string;
   memoryPolicy: string;
+  knowledgePolicy: string;
   responseStyle: string;
 } {
   return {
     soul: readOverridablePrompt("soul.md"),
     memoryPolicy: readBuiltinPrompt("memory_policy.md"),
+    knowledgePolicy: readBuiltinPrompt("knowledge_policy.md"),
     responseStyle: readOverridablePrompt("response_style.md"),
   };
 }
@@ -65,7 +66,6 @@ export interface MemorySnapshot {
     source_conversation_id: string;
     source_message_id: string | null;
   }>;
-  knowledgeIndex: string;
 }
 
 export function buildMemorySnapshot(
@@ -141,9 +141,6 @@ export function buildMemorySnapshot(
       source_conversation_id: r.source_conversation_id,
       source_message_id: r.source_message_id,
     })),
-    knowledgeIndex: existsSync(knowledgeIndexPath)
-      ? readFileSync(knowledgeIndexPath, "utf-8")
-      : "（知识地图尚未生成）",
   };
 }
 
@@ -154,6 +151,7 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
 
   sections.push(promptSet.soul);
   sections.push(promptSet.memoryPolicy);
+  sections.push(promptSet.knowledgePolicy);
   sections.push(promptSet.responseStyle);
 
   sections.push("---\n# 身份画像\n" + snapshot.profile);
@@ -198,17 +196,5 @@ export function buildSystemPrompt(snapshot: MemorySnapshot): string {
     sections.push("---\n# Fresh episodes（尚未被 daily_memory 消化）\n" + eps);
   }
 
-  sections.push("---\n# 知识地图\n" + filterVolatileMetadata(snapshot.knowledgeIndex));
-
   return sections.join("\n\n");
-}
-
-// 知识地图正文里被工具注入的 frontmatter 片段可能带 updated_at（每次写盘都变）；
-// 把这种波动元数据剔掉，保证记忆源不变时 system prompt 字节级稳定。
-// 只过滤 `updated_at:` 这一行，不误伤 `last_updated_at:` 等其它字段。
-function filterVolatileMetadata(text: string): string {
-  return text
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("updated_at:"))
-    .join("\n");
 }

@@ -16,9 +16,9 @@ const DM_GROUP_TAIL = `
 ---
 # 当前会话工具纪律
 - 持续叙事线由 daily_memory 统一维护；普通对话不要直接写 storylines。
-- 如用户明确要求收藏 URL，可先 fetch_article 再 save_to_garden。
+- 如用户明确要求收藏 URL，可先 fetch_article 再 vault_save。
 {EXTERNAL_FACTS}
-- DM、主题群和话题中，当前话题明显可能命中已有知识时可以 grep_vault / read_vault，回答要短，不要整段搬运原文。
+- DM、主题群和话题中，当前话题明显可能命中已有知识时可以 vault_search / vault_read，回答要短，不要整段搬运原文。
 - 反应和普通对话蒸馏只写 episode，绝不修改身份画像。`;
 
 function externalFactsInstruction(): string {
@@ -36,11 +36,9 @@ export function defaultChatTools(): string[] {
   const tools = [
     "search_memory",
     "fetch_article",
-    "save_to_garden",
-    "grep_vault",
-    "read_vault",
-    "update_frontmatter",
-    "promote",
+    "vault_save",
+    "vault_search",
+    "vault_read",
   ];
   if (isWebSearchConfigured()) {
     tools.splice(1, 0, "web_search");

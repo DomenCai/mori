@@ -71,7 +71,7 @@ mori storyline reopen <id>
 | 路径 | 内容 |
 |---|---|
 | `lark_config.json` | 飞书凭据、owner、chat 绑定 |
-| `setting.json` | LLM、时区、会话、HTTP、script 和 knowledge index 配置 |
+| `setting.json` | LLM、时区、会话、HTTP、script 和知识搜索配置 |
 | `.env` | LLM API key |
 | `agent/` | 用户 prompt override、说明，以及只读参考用的 `builtin/` |
 | `memory/` | 可编辑的身份画像 `profile.md` 和当前主线 `chapter.md` |

@@ -62,6 +62,20 @@ export function renderKnowledgeCard(title: string, content: string): object {
   };
 }
 
+export function renderClipCard(title: string, content: string): object {
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: title } },
+    body: {
+      elements: [
+        markdown(content),
+        { tag: "hr" },
+        note("长按卡片创建话题可以继续聊这篇"),
+      ],
+    },
+  };
+}
+
 // 斜杠命令的展示卡片：带蓝色标题栏 + 一段 markdown 正文。
 export function renderInfoCard(title: string, body: string): object {
   return {
@@ -76,9 +90,10 @@ const WELCOME_MORE =
   "- 记住你是谁、你正在经历什么 → <font color='wathet'>/profile</font>、<font color='wathet'>/chapter</font>\n" +
   "- 定时报告与信息投喂 → <font color='wathet'>/schedules</font>\n" +
   "- 日记请发在日记群，我会单独整理 → <font color='wathet'>/new-diary-group</font>\n" +
+  "- 链接和资料丢到收藏群，我会保存到知识库 → <font color='wathet'>/new-clip-group</font>\n" +
   "- 开一个主题群深聊 → <font color='wathet'>/new-chat 群名</font>";
 
-// 首次绑定后的"上手卡"：精简动作 + 折叠的完整能力 + 一个创建日记群按钮。
+// 首次绑定后的"上手卡"：精简动作 + 折叠的完整能力 + 常用群创建按钮。
 export function renderWelcomeCard(): object {
   return {
     schema: "2.0",
@@ -94,16 +109,45 @@ export function renderWelcomeCard(): object {
         ),
         collapsiblePanel("mori 还能帮你做什么", WELCOME_MORE),
         markdown(
-          "\n**日记发在专门的日记群里**\n" +
-          "点下面按钮建一个，日记和复盘丢那儿，我会单独帮你整理。",
+          "\n**先建两个常用群**\n" +
+          "日记和复盘丢到日记群；链接、文章和资料丢到收藏群。",
         ),
         {
-          tag: "button",
-          text: { tag: "plain_text", content: "创建日记群" },
-          type: "default",
-          width: "default",
-          behaviors: [
-            { type: "callback", value: { action: "onboard_diary_group" } },
+          tag: "column_set",
+          flex_mode: "stretch",
+          columns: [
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              elements: [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "创建日记群" },
+                  type: "default",
+                  width: "fill",
+                  behaviors: [
+                    { type: "callback", value: { action: "onboard_diary_group" } },
+                  ],
+                },
+              ],
+            },
+            {
+              tag: "column",
+              width: "weighted",
+              weight: 1,
+              elements: [
+                {
+                  tag: "button",
+                  text: { tag: "plain_text", content: "创建收藏群" },
+                  type: "default",
+                  width: "fill",
+                  behaviors: [
+                    { type: "callback", value: { action: "onboard_clip_group" } },
+                  ],
+                },
+              ],
+            },
           ],
         },
       ],
@@ -339,9 +383,6 @@ function dailyRunStatusIcon(status: string): string {
 function chapterRevisionBody(revision: ChapterRevision): string {
   const changes = textLineChanges(revision.old_content ?? "", revision.new_content);
   const lines = [truncate(revision.reason, 1200)];
-  if (revision.source_storyline_ids.length > 0) {
-    lines.push(`\n**source storylines**\n${revision.source_storyline_ids.join("\n")}`);
-  }
   if (changes.removed.length > 0) {
     lines.push(`\n**删除的行**\n${changes.removed.join("\n")}`);
   }
@@ -433,11 +474,9 @@ export function renderToolCard(toolName: string, status: "running" | "done"): ob
     send_checkin: "发送轻触达",
     web_search: "搜索网页",
     fetch_article: "抓取文章",
-    save_to_garden: "保存知识",
-    grep_vault: "检索 Vault",
-    read_vault: "读取 Vault",
-    update_frontmatter: "更新 Frontmatter",
-    promote: "晋升知识",
+    vault_save: "保存知识",
+    vault_search: "检索 Vault",
+    vault_read: "读取 Vault",
   };
   const icon = status === "running" ? "⏳" : "✅";
   return renderMarkdownCard(`${icon} ${label[toolName] ?? toolName}`);
@@ -501,8 +540,8 @@ const TOOLS_WITH_VISIBLE_OUTPUT = new Set([
   "get_storyline",
   "web_search",
   "fetch_article",
-  "grep_vault",
-  "read_vault",
+  "vault_search",
+  "vault_read",
 ]);
 
 function renderArgs(toolName: string, args: unknown): string {
@@ -554,24 +593,17 @@ function renderArgs(toolName: string, args: unknown): string {
     pushString(lines, "reason", record.reason);
     pushStringArray(lines, "source_storyline_ids", record.source_storyline_ids);
     pushStringArray(lines, "source_episode_ids", record.source_episode_ids);
-  } else if (toolName === "save_to_garden") {
+  } else if (toolName === "vault_save") {
     pushString(lines, "title", record.title);
-    pushString(lines, "domain", record.domain);
-    pushString(lines, "brief", record.brief);
+    pushString(lines, "source_type", record.source_type);
     pushString(lines, "source_url", record.source_url);
-    pushStringArray(lines, "tags", record.tags);
+    pushString(lines, "origin_note", record.origin_note);
     pushString(lines, "body", record.body, 800);
-  } else if (toolName === "grep_vault") {
+  } else if (toolName === "vault_search") {
     pushString(lines, "query", record.query);
-    pushString(lines, "scope", record.scope);
-  } else if (toolName === "read_vault") {
+    pushNumber(lines, "k", record.k);
+  } else if (toolName === "vault_read") {
     pushString(lines, "path", record.path);
-  } else if (toolName === "update_frontmatter") {
-    pushString(lines, "path", record.path);
-    pushString(lines, "frontmatter_json", record.frontmatter_json, 600);
-  } else if (toolName === "promote") {
-    pushString(lines, "path", record.path);
-    pushString(lines, "my_note", record.my_note);
   }
 
   if (lines.length > 0) return lines.join("\n");
@@ -640,15 +672,11 @@ function summarizeArgs(toolName: string, args: unknown): string {
   if (toolName === "get_storyline") return pick("id");
   if (toolName === "web_search") return pick("query");
   if (toolName === "fetch_article") return pick("url");
-  if (toolName === "grep_vault") return pick("query");
-  if (
-    toolName === "read_vault" ||
-    toolName === "update_frontmatter" ||
-    toolName === "promote"
-  ) {
+  if (toolName === "vault_search") return pick("query");
+  if (toolName === "vault_read") {
     return pick("path");
   }
-  if (toolName === "save_to_garden") return pick("title");
+  if (toolName === "vault_save") return pick("title");
   if (toolName === "update_profile") return pick("operation");
   return "";
 }
@@ -679,11 +707,9 @@ function toolLabel(toolName: string): string {
     send_checkin: "发送轻触达",
     web_search: "搜索网页",
     fetch_article: "抓取文章",
-    save_to_garden: "保存知识",
-    grep_vault: "检索 Vault",
-    read_vault: "读取 Vault",
-    update_frontmatter: "更新 Frontmatter",
-    promote: "晋升知识",
+    vault_save: "保存知识",
+    vault_search: "检索 Vault",
+    vault_read: "读取 Vault",
   };
   return label[toolName] ?? toolName;
 }

@@ -5,16 +5,16 @@ import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import {
   basename,
-  extname,
   isAbsolute,
   join,
   relative,
   resolve as resolvePath,
 } from "node:path";
 import type { AgentService } from "../agent/index.js";
+import type { WeeklyReviewInput } from "../agent/agents/weekly-review.js";
 import type { ChatRegistry } from "../lark/chatRegistry.js";
 import { runConsolidation } from "../memory/consolidation.js";
 import { runDailyMemory } from "../memory/daily-memory.js";
@@ -22,18 +22,13 @@ import { logger } from "../log.js";
 import {
   loadSchedulesConfig,
   type AgentSchedule,
-  type KnowledgeIndexTrigger,
   type ScheduleDefinition,
   type ScriptSchedule,
 } from "./config.js";
 import { MessageService } from "../storage/messages.js";
 import { scriptDir, type ScriptRuntimeConfig, type SettingConfig } from "../config.js";
-import {
-  slugify,
-  VaultService,
-  type KnowledgeArticle,
-} from "../knowledge/vault.js";
-import { runWindow } from "../utils.js";
+import { VaultService, type VaultFile } from "../knowledge/vault.js";
+import { isoWeekKey, isoWeekRange } from "../utils.js";
 import { renderInfoCard, renderKnowledgeCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 
@@ -151,31 +146,6 @@ export function initSchedules(
     }
   }
 
-  const knowledgeIndex = config.schedules.find(
-    (schedule) =>
-      schedule.kind === "builtin" &&
-      schedule.builtin === "knowledge_index",
-  );
-  if (knowledgeIndex?.trigger) {
-    setInterval(() => {
-      const current = getCurrentSchedule(knowledgeIndex.id);
-      if (!current?.enabled || current.kind !== "builtin" || !current.trigger) {
-        log.info(`跳过已停用 knowledge_index: ${knowledgeIndex.id}`);
-        return;
-      }
-      runKnowledgeIndexIfNeeded(current.trigger, agentService).catch(
-        (err) => {
-          log.error("知识地图刷新失败:", err);
-        },
-      );
-    }, setting.knowledge.index.checkIntervalMs);
-    if (knowledgeIndex.enabled) {
-      runKnowledgeIndexIfNeeded(knowledgeIndex.trigger, agentService).catch((err) => {
-        log.error("知识地图刷新失败:", err);
-      });
-    }
-  }
-
   log.info(`已注册 ${jobs.length} 个 cron 定时任务`);
   return jobs;
 }
@@ -232,8 +202,8 @@ async function runBuiltin(
     await runConsolidation(db, agentService, channel, registry);
   } else if (schedule.builtin === "daily_memory") {
     await runDailyMemory(db, agentService, channel, registry);
-  } else if (schedule.builtin === "knowledge_index") {
-    await agentService.runKnowledgeIndexBuiltin();
+  } else if (schedule.builtin === "weekly_review") {
+    await runWeeklyReview(db, agentService, channel, registry);
   }
 }
 
@@ -277,9 +247,6 @@ async function runAgentScheduleInner(
     throw new Error(`agent ${schedule.id} 不能同时配置 prompt 和 script`);
   }
   if (schedule.prompt) {
-    if (schedule.deliver?.inbox) {
-      throw new Error(`agent inline prompt 不允许写入 Inbox：${schedule.id}`);
-    }
     const text = await agentService.runTask(schedule.prompt, {
       profile: schedule.profile,
       system: schedule.system ?? "bare",
@@ -338,53 +305,30 @@ async function deliverScheduleResult(
   }
 
   const shouldNotify = schedule.deliver?.notify === true;
-  const inbox = schedule.deliver?.inbox?.trim();
-  if (!inbox && !shouldNotify) {
+  if (!shouldNotify) {
     log.info(`${schedule.kind} ${schedule.id} 已运行，无投递目标`);
     return;
   }
 
-  let knowledgePath: string | null = null;
-  if (inbox) {
-    const vault = new VaultService();
-    const slug = deterministicSlug(schedule.id, runWindow(new Date()));
-    const article = toKnowledgeArticle(output);
-    const writeResult = vault.writeInbox(inbox, slug, article);
-    if (writeResult.existed) {
-      log.info(`${schedule.kind} ${schedule.id} 本窗口已投递，跳过: ${writeResult.path}`);
-      return;
-    }
-    knowledgePath = writeResult.path;
-  }
-
-  if (!shouldNotify) return;
   const chatId = await ensureNotificationChat(
     channel,
     registry,
     schedule.deliver?.notifyChat?.trim() || undefined,
   );
   const sent = await channel.send(chatId, {
-    card: knowledgePath
-      ? renderKnowledgeCard(output.title, output.body)
-      : renderInfoCard(output.title, output.body),
+    card: renderInfoCard(output.title, output.body),
   });
-  if (knowledgePath) {
-    new VaultService().updateFrontmatter(knowledgePath, {
-      pushed_message_id: sent.messageId,
-    });
-  }
   new MessageService(db).saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: larkChatConversationId(chatId),
     conversationType: "notification",
     content: output.body,
-    knowledgePath,
   });
 }
 
 export function deterministicSlug(scheduleId: string, window: string): string {
-  return slugify(`${scheduleId}-${window}`);
+  return `${scheduleId}-${window}`.replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, "-");
 }
 
 export function resolveScriptPath(script: string): string {
@@ -496,20 +440,6 @@ function normalizeScheduleResult(
   };
 }
 
-function toKnowledgeArticle(output: NormalizedScheduleResult): KnowledgeArticle {
-  if (!output.title || !output.domain || !output.brief || !output.body) {
-    throw new Error("写入 Inbox 需要返回完整文章字段：title/domain/brief/body");
-  }
-  return {
-    title: output.title,
-    domain: output.domain,
-    tags: output.tags,
-    brief: output.brief,
-    body: output.body,
-    source_url: output.source_url,
-  };
-}
-
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -531,6 +461,148 @@ function withTimeout<T>(
 }
 
 const DEFAULT_NOTIFY_CHAT_NAME = "mori 通知";
+
+async function runWeeklyReview(
+  db: Database.Database,
+  agentService: AgentService,
+  channel: LarkChannel,
+  registry: ChatRegistry,
+): Promise<void> {
+  const vault = agentService.getVaultService();
+  const files = vault.listFrontmatter();
+  const missing = missingReviewPeriods(files, new Date()).slice(0, 4);
+  if (missing.length === 0) {
+    log.info("收藏周报无缺口，跳过");
+    return;
+  }
+
+  const generated: Array<{ period: string; path: string; body: string; titles: string[] }> = [];
+  for (const period of missing) {
+    const weekItems = weekItemsForPeriod(vault, files, period);
+    if (weekItems.length === 0) continue;
+    const input: WeeklyReviewInput = {
+      weekItems,
+      priorReviews: priorReviewsForPeriod(vault, files, period),
+      period,
+    };
+    const body = await agentService.runWeeklyReviewBuiltin(input);
+    if (!body) {
+      log.warn(`收藏周报 ${period} 未返回正文，留待下次重试`);
+      continue;
+    }
+    const result = vault.ingestNote({
+      title: `${period} 收藏周报`,
+      body,
+      source_type: "review",
+      path: `reviews/${period}.md`,
+      period,
+      covers: weekItems.map((item) => item.path),
+    });
+    generated.push({
+      period,
+      path: result.path,
+      body,
+      titles: weekItems.map((item) => item.title),
+    });
+    files.push(vault.read(result.path));
+  }
+
+  const latest = generated.at(-1);
+  if (!latest) return;
+  const chatId = await ensureNotificationChat(channel, registry);
+  const cardBody = `${latest.body}\n\n---\n${latest.titles.map((title) => `- ${title}`).join("\n")}`;
+  const sent = await channel.send(chatId, {
+    card: renderKnowledgeCard(`${latest.period} 收藏周报`, cardBody),
+  });
+  new MessageService(db).saveAssistantMessage({
+    id: larkMessageId(sent.messageId)!,
+    source: "lark",
+    conversationId: larkChatConversationId(chatId),
+    conversationType: "notification",
+    content: cardBody,
+    knowledgePath: latest.path,
+  });
+}
+
+function missingReviewPeriods(files: VaultFile[], now: Date): string[] {
+  const nowMs = now.getTime();
+  const existing = new Set(
+    files
+      .filter((file) => file.frontmatter.source_type === "review")
+      .map((file) => String(file.frontmatter.period || "").trim())
+      .filter(Boolean),
+  );
+  const periods = new Set<string>();
+  for (const file of files) {
+    if (file.frontmatter.source_type === "review") continue;
+    const savedAt = Date.parse(String(file.frontmatter.saved_at ?? ""));
+    if (!Number.isFinite(savedAt)) continue;
+    const period = isoWeekKey(new Date(savedAt));
+    if (Date.parse(isoWeekRange(period).endIso) > nowMs) continue;
+    periods.add(period);
+  }
+  return [...periods]
+    .filter((period) => !existing.has(period))
+    .sort();
+}
+
+function weekItemsForPeriod(
+  vault: VaultService,
+  files: VaultFile[],
+  period: string,
+): WeeklyReviewInput["weekItems"] {
+  const range = isoWeekRange(period);
+  const start = Date.parse(range.startIso);
+  const end = Date.parse(range.endIso);
+  return files
+    .filter((file) => file.frontmatter.source_type !== "review")
+    .filter((file) => {
+      const savedAt = Date.parse(String(file.frontmatter.saved_at ?? ""));
+      return Number.isFinite(savedAt) && savedAt >= start && savedAt < end;
+    })
+    .sort((a, b) =>
+      String(a.frontmatter.saved_at ?? "").localeCompare(
+        String(b.frontmatter.saved_at ?? ""),
+      ),
+    )
+    .map((file) => {
+      const full = vault.read(file.path);
+      return {
+        path: full.path,
+        title: String(full.frontmatter.title ?? full.path),
+        source_type: String(full.frontmatter.source_type ?? ""),
+        excerpt: excerpt(full.body, 500),
+      };
+    });
+}
+
+function priorReviewsForPeriod(
+  vault: VaultService,
+  files: VaultFile[],
+  period: string,
+): WeeklyReviewInput["priorReviews"] {
+  return files
+    .filter((file) => file.frontmatter.source_type === "review")
+    .filter((file) => String(file.frontmatter.period ?? "") < period)
+    .sort((a, b) =>
+      String(b.frontmatter.period ?? "").localeCompare(
+        String(a.frontmatter.period ?? ""),
+      ),
+    )
+    .slice(0, 2)
+    .map((file) => {
+      const full = vault.read(file.path);
+      return {
+        period: String(full.frontmatter.period ?? file.path),
+        body: full.body,
+      };
+    });
+}
+
+function excerpt(text: string, max: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
 
 async function ensureNotificationChat(
   channel: LarkChannel,
@@ -574,35 +646,4 @@ async function createNotificationChat(
   });
   registry.register(chatId, "notification", name, isDefault);
   return chatId;
-}
-
-async function runKnowledgeIndexIfNeeded(
-  trigger: KnowledgeIndexTrigger,
-  agentService: AgentService,
-): Promise<void> {
-  if (shouldRunKnowledgeIndex(trigger)) {
-    await agentService.runKnowledgeIndexBuiltin();
-  }
-}
-
-function shouldRunKnowledgeIndex(trigger: KnowledgeIndexTrigger): boolean {
-  const vault = new VaultService();
-  vault.ensureBaseDirs();
-  const indexPath = vault.resolve(".index.md");
-  const files = listMarkdownFiles(vault.resolve("."));
-  const knowledgeFiles = files.filter((file) => basename(file) !== ".index.md");
-  if (knowledgeFiles.length === 0) return false;
-  if (!existsSync(indexPath)) return true;
-
-  const indexMtime = statSync(indexPath).mtimeMs;
-  const newCount = knowledgeFiles.filter((file) => statSync(file).mtimeMs > indexMtime).length;
-  const ageDays = (Date.now() - indexMtime) / 86_400_000;
-  return newCount >= trigger.n || (newCount > 0 && ageDays > trigger.days);
-}
-
-function listMarkdownFiles(root: string): string[] {
-  if (!existsSync(root)) return [];
-  const stat = statSync(root);
-  if (stat.isFile()) return extname(root) === ".md" ? [root] : [];
-  return readdirSync(root).flatMap((name) => listMarkdownFiles(join(root, name)));
 }

@@ -5,7 +5,8 @@ export type ConversationType =
   | "dm"
   | "topic"
   | "thread"
-  | "notification";
+  | "notification"
+  | "clip";
 
 export interface IngestedMessage {
   id: string;

@@ -13,7 +13,7 @@ scope key 就是 `IngestedMessage.conversationId`，是完整 scope：
 | 日记群 / 私聊 / 主题群 | `lark:chat:<chat_id>` |
 | 飞书话题 thread | `lark:thread:<chat_id>:<thread_id>` |
 | 历史日记导入 | `import:diary:<date>`（按天一段，跨天 reset，见 [开发指南](development.md)） |
-| 内部任务 | `weekly_consolidation` / `daily_memory_*` / `knowledge_index_*` 等内部 scope |
+| 内部任务 | `weekly_consolidation` / `daily_memory_*` / `weekly_review_*` 等内部 scope |
 
 ## 续聊 vs 新会话
 
@@ -84,7 +84,7 @@ SQLite 两张表（见 `src/storage/schema.sql`）：
 - `agent_sessions`：每条 JSONL transcript 一行，含 scope、chat type、profile、tool 快照、status、segment window。`(scope_id, status='open')` 上有 partial unique index 保证同 scope 任一时刻最多一个 open。
 - `message_session_entries`：飞书 message id → agent session id 的映射。每条用户消息和发出的 assistant 消息都登记一条；DM 一轮回多条消息时，每条都登记。
 
-只有 `dm` / `topic` / `thread` / `diary` 会写入这两张表；内部一次性 scope（`schedule` / `distill` / `daily_memory` / `consolidation` / `knowledge_index`）和 diary backfill 不写。
+只有 `dm` / `topic` / `thread` / `diary` 会写入这两张表；内部一次性 scope（`schedule` / `distill` / `daily_memory` / `consolidation` / `review`）和 diary backfill 不写。
 
 ## 并发边界
 
@@ -95,17 +95,17 @@ SQLite 两张表（见 `src/storage/schema.sql`）：
 
 ## system prompt 刷新
 
-每个用户 turn 都重新生成 system prompt（`syncEditableMemoryFiles` → `buildMemorySnapshot` → `buildSystemPrompt` → 具体 agent 的会话 tail），以让长寿命主题群也能拿到之后更新的 profile、chapter、storylines、知识地图。
+每个用户 turn 都重新生成 system prompt（`syncEditableMemoryFiles` → `buildMemorySnapshot` → `buildSystemPrompt` → 具体 agent 的会话 tail），以让长寿命主题群也能拿到之后更新的 profile、chapter、storylines 和知识库策略。
 
 为了在记忆源不变时维持 provider prefix cache：
 
 - system prompt 不注入时间戳、随机值、请求 id、hash 或版本号。
 - storylines / fresh episodes 用 `last_active_at` / `occurred_at` 做选择和排序，但这些时间戳不渲染进 system prompt 文本。
-- 知识地图注入时过滤 `updated_at:` 行（不误伤 `last_updated_at:` 等）；`.index.md` 文件本身可保留该行。
+- system prompt 不注入 vault 文件列表或知识地图；需要知识时由 agent 查询 `vault_search` / `vault_read`。
 - 内存源完全不变时，连续两次构造的 system prompt 字节级相同。
 
 ## 会话类型从哪来
 
 收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `lark_config.json.chatBindings` 查群类型；私聊若未注册会自动登记为 `dm`。如果消息带 `threadId`，会优先作为 `thread` scope 处理。类型决定模型路由、工具集、是否按 `sessions.policies` 自动关闭。
 
-`consolidation`、`daily_memory`、`knowledge_index`、`distill`、`schedule` 是内部任务 scope，不从 chat 绑定来，也不进恢复索引。
+`consolidation`、`daily_memory`、`review`、`distill`、`schedule` 是内部任务 scope，不从 chat 绑定来，也不进恢复索引。

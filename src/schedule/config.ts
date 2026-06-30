@@ -15,12 +15,11 @@ export interface BaseSchedule {
   name: string;
   enabled: boolean;
   cron?: string;
-  trigger?: KnowledgeIndexTrigger;
 }
 
 export interface BuiltinSchedule extends BaseSchedule {
   kind: "builtin";
-  builtin: "weekly_summary" | "daily_memory" | "knowledge_index";
+  builtin: "weekly_summary" | "daily_memory" | "weekly_review";
 }
 
 export interface ScriptSchedule extends BaseSchedule {
@@ -51,12 +50,6 @@ export interface ScheduleDeliver {
   inbox?: string;
 }
 
-export interface KnowledgeIndexTrigger {
-  type: "volume";
-  n: number;
-  days: number;
-}
-
 // 内置任务基线：代码是权威。新增/下线 builtin 直接改这里，
 // 现存部署无需迁移即可生效（JSON 没配就走默认，下线的 builtin 自动消失）。
 const BUILTIN_DEFAULTS: BuiltinSchedule[] = [
@@ -77,11 +70,11 @@ const BUILTIN_DEFAULTS: BuiltinSchedule[] = [
     enabled: true,
   },
   {
-    id: "knowledge-index",
-    name: "知识地图",
+    id: "weekly-review",
+    name: "收藏周报",
     kind: "builtin",
-    builtin: "knowledge_index",
-    trigger: { type: "volume", n: 5, days: 3 },
+    builtin: "weekly_review",
+    cron: "0 8 * * 1",
     enabled: true,
   },
 ];

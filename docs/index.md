@@ -13,8 +13,8 @@
 | agent 的人格、声音定调、嘴上禁令 | [Agent 人格与声音](persona.md) |
 | 日记、storylines、daily memory、weekly consolidation | [记忆模型](memory-model.md) |
 | scope、续聊、新会话、thread/topic 冷却 | [会话与冷却规则](sessions.md) |
-| vault、Inbox/Garden、知识反应、知识工具 | [知识库](knowledge-base.md) |
-| weekly summary、daily memory、knowledge index、自定义投喂 | [定时任务](schedules.md) |
+| vault、收藏群、/save、知识工具 | [知识库](knowledge-base.md) |
+| weekly summary、daily memory、weekly review、自定义投喂 | [定时任务](schedules.md) |
 | 本地开发、调试、数据库、日志 | [开发指南](development.md) |
 | 设计历史和后续规划 | [Design Index](../design/index.md) |
 

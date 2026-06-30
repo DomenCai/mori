@@ -10,3 +10,5 @@ data/script/*
 *.log
 diary-data/
 data/schedules.json
+data/vault/notes/
+data/vault/reviews/

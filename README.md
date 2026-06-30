@@ -52,14 +52,22 @@ mori status   # 查看状态与日志路径
 |---|---|
 | `/help` | 查看命令列表 |
 | `/new-diary-group` | 创建日记群 |
+| `/new-clip-group` | 创建唯一收藏群 |
+| `/clip <链接或文字>` | 直接收藏链接或文本；回复通知时可只发 `/clip` |
 | `/new-chat <主题>` | 创建持续主题群 |
 | `/new` | 重置当前会话 |
 | `/compact` | 压缩当前会话上下文 |
+| `/save [备注]` | 保存当前 session segment 内最近 60 条 user/assistant 文本 |
+| `/think <内容>` | 顺着「为什么会这样」往下钻 |
+| `/rank <内容>` | 把一个领域降到两三根生成现象的线 |
+| `/plain <内容>` | 用大白话把概念讲到能复述 |
 | `/consolidate` | 手动触发周度合并 |
 | `/profile` | 查看身份画像（配合自然语言纠错） |
 | `/profile history` | 查看画像变更历史 |
+| `/chapter` | 查看当前主线 |
+| `/chapter history` | 查看当前主线变更历史 |
 | `/storylines` | 查看 active + recent dormant 叙事线 |
-| `/storyline <id>` | 查看或纠正单条叙事线 |
+| `/storyline <id>` | 查看单条叙事线 |
 | `/dream` | 查看最近 daily_memory runs |
 | `/schedules` | 查看和开关定时任务 |
 
@@ -77,8 +85,8 @@ mori status   # 查看状态与日志路径
 - [文档总览](docs/index.md) —— 当前功能文档入口和覆盖矩阵
 - [飞书命令](docs/commands.md) —— 群、会话、画像、storylines、定时任务命令
 - [记忆模型](docs/memory-model.md) —— 当前 profile / chapter / storylines / episodes / daily memory 语义
-- [知识库](docs/knowledge-base.md) —— vault、Inbox/Garden、知识反应和知识工具
-- [定时任务](docs/schedules.md) —— builtin、script / agent 投喂和 knowledge index
+- [知识库](docs/knowledge-base.md) —— vault、收藏群、`/clip`、`/save` 和知识工具
+- [定时任务](docs/schedules.md) —— builtin、script / agent 投喂和收藏周报
 - [配置参考](docs/configuration.md) —— runtime root、配置文件、模型路由和提示词位置
 - [会话与冷却规则](docs/sessions.md) —— scope、续聊、新会话、thread/topic 冷却
 - [开发指南](docs/development.md) —— 本地怎么跑、改提示词、看日志、调试

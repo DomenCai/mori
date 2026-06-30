@@ -20,7 +20,7 @@ mori 目前有三类 schedule：
 |---|---|---|---|
 | `weekly-summary` | `weekly_summary` | `55 23 * * 0` | 运行周度合并，更新画像、写周总结并发卡 |
 | `daily-memory` | `daily_memory` | `0 6 * * *` | 处理前一业务自然日的 fresh episodes，维护 storylines，必要时轻触达 |
-| `knowledge-index` | `knowledge_index` | 内容量触发 | 刷新 `vault/.index.md` 知识地图 |
+| `weekly-review` | `weekly_review` | `0 8 * * 1` | 为已结束且有新增收藏的 ISO 周生成收藏周报 |
 
 ## schedules.json 覆盖层
 
@@ -61,11 +61,11 @@ type ScheduleResult =
 
 - `null` / `undefined`：本窗口无投递。
 - `string`：等价于 `{ body: string }`。
-- 无 `deliver.inbox`：只要求 `body`，标题默认用 schedule name。
-- 有 `deliver.inbox`：必须返回完整文章字段 `title/domain/brief/body`。
+- 只要求 `body`，标题默认用 schedule name。
 - `deliver.notify:true`：推送飞书通知群；默认使用 `mori 通知`，首次投递会自动建群。
 - `deliver.notifyChat`：可选通知群名称；配置后按该名称在 notification 群绑定里查找，找不到就新建同名通知群。不配置时走默认通知群，默认群用本地 `isDefault` 标记识别，不依赖群名。
-- 既无 `inbox` 又不 notify：允许静默运行。
+- `deliver.inbox`：历史字段，当前保留兼容但不写入 vault。
+- 不 notify：允许静默运行。
 
 ## Script 任务
 
@@ -98,8 +98,6 @@ export default async function run() {
 }
 ```
 
-如果配置了 `deliver.inbox`，返回值必须补齐 `domain` 和 `brief`。
-
 ## Agent Inline 任务
 
 inline agent 用于简单提醒或简单定时问答：
@@ -126,7 +124,6 @@ inline agent 用于简单提醒或简单定时问答：
 - `profile` 可选，填 `setting.llm.model_profiles` 里的档位名，例如 `"normal"` / `"strong"`；不填或档位不存在时回退 `"normal"`。
 - `system` 默认 `"bare"`；`"mori"` 会注入 mori 的用户信息/记忆 system prompt；也可以填自定义 system prompt。
 - `tools` 只能写内置工具名，不传即不开工具。
-- inline prompt 不允许写入 Inbox；配置 `deliver.inbox` 会报错。
 - 通知标题使用 schedule name，正文使用 agent 最终输出。
 
 ## Agent Task Script
@@ -143,7 +140,7 @@ inline agent 用于简单提醒或简单定时问答：
       "script": "aihot-selected-agent.mjs",
       "profile": "strong",
       "cron": "0 */4 * * *",
-      "deliver": { "notify": true, "notifyChat": "AI 精选", "inbox": "AI精选" },
+      "deliver": { "notify": true, "notifyChat": "AI 精选" },
       "enabled": true
     }
   ]
@@ -208,18 +205,6 @@ Task spec 字段：
 - `agent` 超时使用 `Promise.race`，不会强杀底层 LLM 请求或工具调用。
 - 只通知不入库时没有框架层文件去重；需要去重的任务应由脚本自存 state。
 
-## Knowledge index 触发
+## 收藏周报补偿
 
-`knowledge-index` 没有 cron 时也会被后台按 `setting.knowledge.index.checkIntervalMs` 检查一次。默认 trigger：
-
-```jsonc
-{ "type": "volume", "n": 5, "days": 3 }
-```
-
-满足以下任一条件会刷新：
-
-- `vault/.index.md` 不存在且 vault 有知识文件。
-- 自上次 index 以来新增或修改的知识文件数大于等于 `n`。
-- 有新内容，并且 index 已超过 `days` 天未刷新。
-
-如果 LLM 版 knowledge index 没产出正文，任务会报错；代码里还有 deterministic index helper，但当前 builtin 入口使用 harness 生成。
+`weekly_review` 是普通 cron builtin。每次运行时会计算“有新增笔记且已经结束的 ISO 周”减去 `vault/reviews/` 里已存在的 `period`，按最旧到最新补最多 4 周；只有本次生成的最新一期会推送通知群，其余只写回 vault。

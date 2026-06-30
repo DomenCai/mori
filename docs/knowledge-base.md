@@ -1,90 +1,68 @@
 # 知识库
 
-知识库是 mori 的 vault：Agent 可以把用户明确收藏的内容、定时投喂的文章和用户对知识卡片的反应沉淀成 Markdown 文件。它不是任务执行平台，而是“关于世界的资料库”和“关于用户兴趣的反馈回路”。
+知识库是 mori 的 vault：它是 Markdown 文件存储，智能发生在读取和综合时。写入侧只抓取、落盘和去重，不在入库时跑 LLM 做 digest、标签或知识地图。
 
 ## 文件位置
 
 生产态在 `~/.mori/vault/`，开发态在 `data/vault/`。
 
-```
+```text
 vault/
-  Inbox/<任务名>/YYYY-MM/<slug>.md
-  Garden/YYYY-MM/<slug>.md
-  .index.md
+  notes/YYYY-MM/<slug>.md
+  reviews/YYYY-Www.md
 ```
 
-| 区域 | 用途 |
-|---|---|
-| `Inbox/` | 定时投喂的候选内容，等待用户反应 |
-| `Garden/` | 用户主动收藏，或从 Inbox 晋升后的 kept 内容 |
-| `.index.md` | knowledge index builtin 生成的知识地图 |
-
-vault 文件必须有 YAML frontmatter；正文创建后 Agent 不做就地编辑。
+`notes/` 存收藏群、`/save` 对话和手动保存内容；`reviews/` 存每周收藏周报。旧的 `Inbox/`、`Garden/`、`.index.md` 不再由新代码读写。
 
 ## Frontmatter
 
-创建文件时会写入：
+创建文件时只写最小字段：
 
 ```yaml
 ---
 title: 标题
-domain: AI
-tags:
-  - agent
-brief: 一句话摘要
-status: inbox # inbox | kept
+source_type: clip # clip | conversation | review | manual
 source_url: https://example.com
+origin_note: 用户原始消息或 /save 备注
 saved_at: 2026-06-20T00:00:00.000Z
+period: 2026-W26
+covers:
+  - notes/2026-06/example.md
 ---
 ```
 
-用户对知识卡片产生反应后，会追加或更新：
-
-```yaml
-status: kept
-reacted_at: 2026-06-20T00:00:00.000Z
-my_note: 用户回复里的看法
-pushed_message_id: om_xxx
-```
+缺省字段不写。正文就是原始抓取内容、过滤后的对话 markdown 或周报正文。
 
 ## 入库方式
 
 | 方式 | 结果 |
 |---|---|
-| 用户明确要求收藏 URL | Agent 可调用 `fetch_article` 抓正文，再 `save_to_garden` 直接写入 `Garden/YYYY-MM/` |
-| 定时任务产出文章 | 框架写入 `Inbox/<任务名>/YYYY-MM/`，可选发到通知群 |
-| 用户普通回复通知群知识卡 | 对应 Inbox 文件被 `promote` 到 Garden，frontmatter 记录 `my_note`，并写一条 reaction episode |
-| 用户话题回复通知群知识卡 | 文件先晋升到 Garden；thread 内可深聊，thread 关闭时蒸馏这段讨论 |
+| 收藏群顶楼发纯 URL | 抓取正文，写入 `notes/YYYY-MM/`，反馈卡带 `knowledge_path` |
+| 收藏群顶楼发文本或 URL+评论 | 直接把文本作为正文写入 `notes/YYYY-MM/` |
+| 任意受管会话发 `/clip <纯 URL>` | 抓取正文并收藏 |
+| 任意受管会话发 `/clip <文本或 URL+评论>` | 直接收藏这段文本并回反馈卡 |
+| 回复一条通知发送 `/clip` | 把被回复的通知内容收藏到 `notes/YYYY-MM/` |
+| DM / 主题群 / clip thread 发 `/save [备注]` | 保存当前 session segment 内最近 60 条 user/assistant 文本 |
+| 用户明确要求 agent 收藏 | agent 可 `fetch_article` 后调用 `vault_save` |
+| 收藏周报 cron | 每周生成 `reviews/YYYY-Www.md`，并把最新一期推到通知群 |
 
-第一版只支持 URL 文章抓取和 script 返回结构化文章；零散文本收藏没有单独入口。
+相同 URL 会做轻量 canonicalization 后去重：去 fragment、尾斜杠和 `utm_*` 参数。
 
 ## 知识工具
 
-普通对话、主题群和 thread 默认可用知识工具：
+普通对话、主题群和 thread 默认可用：
 
 | 工具 | 作用 |
 |---|---|
-| `fetch_article(url)` | 抓取 URL 并清洗成 Markdown 文章 |
-| `save_to_garden(...)` | 把用户明确收藏的内容保存到 Garden |
-| `grep_vault(query, scope?)` | 用 `rg` 检索 vault；无 `rg` 时走内置 fallback |
-| `read_vault(path)` | 读取单个 vault Markdown 文件全文 |
-| `update_frontmatter(path, frontmatter_json)` | 只更新 frontmatter，不改正文 |
-| `promote(path, my_note?)` | 把 Inbox 文件移动到 Garden，并记录用户看法 |
+| `fetch_article(url)` | 抓取 URL 为 markdown；飞书文档走 SDK，其它走 defuddle |
+| `vault_save(...)` | 新增保存 clip/manual 笔记，不允许覆写路径 |
+| `vault_search(query, k?)` | 用 `rg` 检索 vault；空 query 返回最近笔记 |
+| `vault_read(path)` | 读取单个 vault Markdown 文件全文 |
 
-知识工具的路径参数都是 vault 相对路径，并有越界检查。
+删除、更新、promote 不在工具内。用户要删改文件时，直接在 vault 目录或 Obsidian 里处理。
 
-## 知识地图
+## 查询与周报
 
-`knowledge_index` builtin 维护 `vault/.index.md`。它读取 vault 文件的 path + frontmatter，生成压缩地图，让 Agent 知道 vault 里大概有什么。
+system prompt 不再注入知识地图。agent 根据 `knowledge_policy.md` 在查询时主动 `vault_search` / `vault_read`，跨多条笔记综合共识、分歧和时间线。
 
-触发规则见 [定时任务](schedules.md)：默认新增内容达到阈值，或 index 有新内容且超过阈值天数，就刷新。session 开始时会把当前 `.index.md` 注入快照；session 中途新增的文章仍可被 `grep_vault` 命中，但不一定已经出现在地图里。
-
-## 通知群反馈回路
-
-定时投喂会使用默认通知群，或按 `deliver.notifyChat` 使用命名通知群。通知卡片包含标题、领域、标签、vault 路径和摘要。
-
-- 普通回复：快速收藏和记录看法，不展开长对话。
-- 话题回复：进入飞书 thread 深聊，thread 是独立 scope。
-- 无关联知识卡的普通通知群消息会被忽略并提示。
-
-知识反应只写 episode，不直接写身份画像；画像仍由周度合并或 CLI 手动纠错维护。
+`weekly_review` builtin 每周一 08:00 检查已结束且有新增的 ISO 周；缺口按最旧到最新补，最多 4 周。周报本身写回 `reviews/`，下一期会读取最近 1-2 期周报做承接。

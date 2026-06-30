@@ -55,6 +55,10 @@ export class ChatRegistry {
     )?.chatId;
   }
 
+  getClipChat(): string | undefined {
+    return this.bindings().find((item) => item.chatType === "clip")?.chatId;
+  }
+
   getOwnerOpenId(): string | undefined {
     return this.config.ownerOpenId;
   }

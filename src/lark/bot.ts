@@ -22,6 +22,7 @@ import { ChatRegistry } from "./chatRegistry.js";
 import { larkCardToText } from "./cardText.js";
 import { initChannel } from "./channel.js";
 import {
+  createClipGroup,
   createDiaryGroup,
   handleCommand,
   renderSchedulesCard,
@@ -32,6 +33,7 @@ import { toIngestedMessage } from "./ingest.js";
 import { parseLens } from "./lenses.js";
 import {
   handleChatMessage,
+  handleClipMessage,
   handleDiaryMessage,
   handleLensMessage,
   handleNotificationMessage,
@@ -192,10 +194,13 @@ async function handleLarkMessage(
   }
 
   const lens = parseLens(effectiveMsg.content);
-  if (lens && resolvedType !== "diary") {
-    const lensChatType = effectiveMsg.threadId || resolvedType === "notification"
-      ? "thread"
-      : resolvedType;
+  if (lens && resolvedType !== "diary" && (resolvedType !== "clip" || effectiveMsg.threadId)) {
+    const lensChatType: "dm" | "topic" | "thread" =
+      effectiveMsg.threadId || resolvedType === "notification"
+        ? "thread"
+        : resolvedType === "dm" || resolvedType === "topic"
+          ? resolvedType
+          : "thread";
     await handleLensMessage(
       effectiveMsg,
       ingested,
@@ -229,6 +234,8 @@ async function handleLarkMessage(
         text: "这条通知群消息没有关联到知识卡片，已忽略。",
       });
     }
+  } else if (resolvedType === "clip") {
+    await handleClipMessage(effectiveMsg, ingested, channel, agentService);
   } else if (resolvedType === "topic") {
     await handleChatMessage(effectiveMsg, ingested, channel, agentService, "topic");
   } else {
@@ -321,20 +328,34 @@ async function handleOnboardingAction(
 ): Promise<boolean> {
   const value = evt.action.value;
   if (!value || typeof value !== "object") return false;
-  if ((value as Record<string, unknown>).action !== "onboard_diary_group") {
-    return false;
-  }
-  if (registry.getDiaryChats().length > 0) {
+  const action = (value as Record<string, unknown>).action;
+  if (action === "onboard_diary_group") {
+    if (registry.getDiaryChats().length > 0) {
+      await channel.send(evt.chatId, {
+        text: "你已经有日记群了，去那个群里记日记就行～",
+      });
+      return true;
+    }
+    await createDiaryGroup(channel, registry, ownerOpenId);
     await channel.send(evt.chatId, {
-      text: "你已经有日记群了，去那个群里记日记就行～",
+      text: "✅ 日记群已创建，去新群里记第一篇日记吧！",
     });
     return true;
   }
-  await createDiaryGroup(channel, registry, ownerOpenId);
-  await channel.send(evt.chatId, {
-    text: "✅ 日记群已创建，去新群里记第一篇日记吧！",
-  });
-  return true;
+
+  if (action === "onboard_clip_group") {
+    if (registry.getClipChat()) {
+      await channel.send(evt.chatId, { text: "收藏群已存在，往里面丢链接或文字就会入库。" });
+      return true;
+    }
+    await createClipGroup(channel, registry, ownerOpenId);
+    await channel.send(evt.chatId, {
+      text: "✅ 收藏群已创建，往里面丢链接或文字就会入库。",
+    });
+    return true;
+  }
+
+  return false;
 }
 
 async function handleScheduleAction(

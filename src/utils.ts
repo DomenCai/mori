@@ -223,3 +223,30 @@ export function weekKey(date = new Date()): string {
   const week = 1 + Math.floor((thursday - Date.UTC(isoYear, 0, 1)) / 604_800_000);
   return `${isoYear}-W${String(week).padStart(2, "0")}`;
 }
+
+export function isoWeekKey(date = new Date()): string {
+  return weekKey(date);
+}
+
+export function isoWeekRange(period: string): { startIso: string; endIso: string } {
+  const match = period.match(/^(\d{4})-W(\d{2})$/);
+  if (!match) throw new Error(`无效 ISO 周：${period}`);
+  const isoYear = Number(match[1]);
+  const week = Number(match[2]);
+  if (!Number.isInteger(week) || week < 1 || week > 53) {
+    throw new Error(`无效 ISO 周：${period}`);
+  }
+
+  const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+  const jan4Dow = (jan4.getUTCDay() + 6) % 7;
+  const week1Monday = Date.UTC(isoYear, 0, 4 - jan4Dow);
+  const monday = new Date(week1Monday + (week - 1) * 604_800_000);
+  const startKey = [
+    monday.getUTCFullYear(),
+    String(monday.getUTCMonth() + 1).padStart(2, "0"),
+    String(monday.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+  const start = businessDateStart(startKey);
+  const end = new Date(start.getTime() + 7 * 86_400_000);
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+}

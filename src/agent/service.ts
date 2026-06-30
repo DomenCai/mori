@@ -23,7 +23,7 @@ import { BaseAgent, OneShotAgent, type AgentCloseContext } from "./base.js";
 import { ChatAgent } from "./agents/chat.js";
 import { DiaryAgent } from "./agents/diary.js";
 import { DistillAgent } from "./agents/distill.js";
-import { KnowledgeIndexAgent } from "./agents/knowledge-index.js";
+import { WeeklyReviewAgent, type WeeklyReviewInput } from "./agents/weekly-review.js";
 import {
   ScheduleAgent,
   type TaskSystemPrompt,
@@ -317,9 +317,9 @@ export class AgentService {
     }
   }
 
-  async runKnowledgeIndexBuiltin(): Promise<string> {
+  async runWeeklyReviewBuiltin(input: WeeklyReviewInput): Promise<string | null> {
     return this.withOneShotAgent(
-      this.createKnowledgeIndexAgent(),
+      this.createWeeklyReviewAgent(input),
       (agent) => agent.run(),
     );
   }
@@ -571,9 +571,9 @@ export class AgentService {
     }
   }
 
-  private createKnowledgeIndexAgent(): KnowledgeIndexAgent {
-    return new KnowledgeIndexAgent(
-      this.vaultService,
+  private createWeeklyReviewAgent(input: WeeklyReviewInput): WeeklyReviewAgent {
+    return new WeeklyReviewAgent(
+      input,
       this.db,
       this.memoryService,
     );

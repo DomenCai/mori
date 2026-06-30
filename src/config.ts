@@ -54,7 +54,7 @@ export type AgentChatType =
   | "thread"
   | "distill"
   | "consolidation"
-  | "knowledge_index"
+  | "review"
   | "daily_memory"
   | "schedule";
 
@@ -105,9 +105,6 @@ export interface SettingConfig {
     };
   };
   knowledge: {
-    index: {
-      checkIntervalMs: number;
-    };
     search: KnowledgeSearchConfig;
   };
 }
@@ -247,7 +244,6 @@ export const vaultDir = join(ROOT, "vault");
 export const memoryDir = join(ROOT, "memory");
 export const scriptDir = join(ROOT, "script");
 export const schedulesPath = join(ROOT, "schedules.json");
-export const knowledgeIndexPath = join(vaultDir, ".index.md");
 
 /** 用户可改的单个文件：调试用仓库原位，生产放 ROOT；缺失时从示例 seed。 */
 function userFile(name: string, devPath: string, seedFrom = devPath): string {
@@ -261,13 +257,13 @@ function userFile(name: string, devPath: string, seedFrom = devPath): string {
 }
 
 const USER_PROMPT_FILES = ["soul.md", "response_style.md"] as const;
-const BUILTIN_PROMPT_FILES = ["soul.md", "memory_policy.md", "response_style.md"] as const;
+const BUILTIN_PROMPT_FILES = ["soul.md", "memory_policy.md", "knowledge_policy.md", "response_style.md"] as const;
 
 const USER_PROMPT_TEMPLATE = `<!--
 这里可以写你的个人 override。
 
 保持本文件为空，或只保留 HTML 注释时，mori 会使用内置版本。
-改完后，新 session 生效；已存在的热 session 不会中途重载。
+改完后，下一次构造 system prompt 生效。
 -->
 `;
 
@@ -278,13 +274,13 @@ const AGENT_README = `# mori agent
 - soul.md：可选，覆盖内置人格内核。
 - response_style.md：可选，覆盖内置回应风格。
 - builtin/：当前版本内置提示词的只读参考，启动时会被刷新，运行时不会读取。
-- memory_policy.md 固定使用内置版本，不能通过这里覆盖。
+- memory_policy.md / knowledge_policy.md 固定使用内置版本，不能通过这里覆盖。
 
 规则：
 
 - mori 会先去掉 HTML 注释，再判断文件是否为空。
 - 文件为空或只有注释时，使用内置版本。
-- 用户 override 只影响新 session，已有热 session 不会中途重载。
+- 用户 override 会在下一次构造 system prompt 时生效。
 - 当前身份画像和当前主线在 ../memory/profile.md 与 ../memory/chapter.md。
 `;
 
@@ -348,7 +344,7 @@ export interface LarkConfig {
   chatBindings?: LarkChatBinding[];
 }
 
-export type LarkChatType = "diary" | "topic" | "notification" | "dm";
+export type LarkChatType = "diary" | "topic" | "notification" | "dm" | "clip";
 
 export interface LarkChatBinding {
   chatId: string;

@@ -1,24 +1,24 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { LarkChannel } from "@larksuite/channel";
 import {
   FetchArticleParams,
-  GrepVaultParams,
-  PromoteParams,
-  ReadVaultParams,
-  SaveToGardenParams,
-  UpdateFrontmatterParams,
+  VaultReadParams,
+  VaultSaveParams,
+  VaultSearchParams,
 } from "../schemas.js";
-import { fetchArticle, slugify, VaultService } from "../../knowledge/vault.js";
-import { nowISO } from "../../utils.js";
+import { VaultService } from "../../knowledge/vault.js";
+import { fetchArticle } from "../../knowledge/fetch.js";
 import { createWebSearchTool, isWebSearchConfigured } from "./web-search.js";
 
-export function createKnowledgeTools(vault: VaultService): AgentTool<any>[] {
+export function createKnowledgeTools(
+  vault: VaultService,
+  channel?: LarkChannel,
+): AgentTool<any>[] {
   const tools: AgentTool<any>[] = [
-    createFetchArticleTool(),
-    createSaveToGardenTool(vault),
-    createGrepVaultTool(vault),
-    createReadVaultTool(vault),
-    createUpdateFrontmatterTool(vault),
-    createPromoteTool(vault),
+    createFetchArticleTool(channel),
+    createVaultSaveTool(vault),
+    createVaultSearchTool(vault),
+    createVaultReadTool(vault),
   ];
   if (isWebSearchConfigured()) {
     tools.unshift(createWebSearchTool());
@@ -26,139 +26,78 @@ export function createKnowledgeTools(vault: VaultService): AgentTool<any>[] {
   return tools;
 }
 
-function createFetchArticleTool(): AgentTool<typeof FetchArticleParams> {
+function createFetchArticleTool(channel?: LarkChannel): AgentTool<typeof FetchArticleParams> {
   return {
     name: "fetch_article",
     label: "抓取文章",
-    description: "抓取 URL 文章并清洗成 markdown。当前只支持 URL 文章收藏。",
+    description:
+      "抓取 URL 并清洗成 markdown。抓到内容后仅当用户明确要求收藏时才调 vault_save，否则只用于阅读和回答。",
     parameters: FetchArticleParams,
     execute: async (_id, params) => {
-      const article = await fetchArticle(params.url);
+      const article = await fetchArticle(params.url, channel?.rawClient);
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(article),
-          },
-        ],
-        details: { title: article.title, source_url: params.url },
+        content: [{ type: "text", text: JSON.stringify(article) }],
+        details: article,
       };
     },
   };
 }
 
-function createSaveToGardenTool(
-  vault: VaultService,
-): AgentTool<typeof SaveToGardenParams> {
+function createVaultSaveTool(vault: VaultService): AgentTool<typeof VaultSaveParams> {
   return {
-    name: "save_to_garden",
-    label: "保存到 Garden",
+    name: "vault_save",
+    label: "保存 Vault",
     description:
-      "把用户明确要求收藏的知识保存到 vault/Garden。只创建新 markdown 文件，不编辑既有正文。",
-    parameters: SaveToGardenParams,
+      "把用户明确要求收藏的内容新增保存到 vault。不能覆盖既有文件，不能写 review/conversation。",
+    parameters: VaultSaveParams,
     execute: async (_id, params) => {
-      const result = vault.saveToGarden(params, slugify(params.title));
+      const result = vault.ingestNote(params);
       return {
-        content: [
-          {
-            type: "text",
-            text: `已保存到 Garden：${result.path}`,
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(result) }],
         details: result,
       };
     },
   };
 }
 
-function createGrepVaultTool(vault: VaultService): AgentTool<typeof GrepVaultParams> {
+function createVaultSearchTool(vault: VaultService): AgentTool<typeof VaultSearchParams> {
   return {
-    name: "grep_vault",
+    name: "vault_search",
     label: "检索 Vault",
     description:
-      "用 ripgrep 检索 vault。只在当前话题明显可能有沉淀时主动使用，不要把原文整段倒给用户。",
-    parameters: GrepVaultParams,
+      "用 ripgrep 检索 vault；query 为空时返回最近笔记。搜到多条相关内容时应读相关文件并综合。",
+    parameters: VaultSearchParams,
     execute: async (_id, params) => {
-      const text = await vault.grep(params.query, params.scope);
+      const results = await vault.search(params.query, params.k ?? 10);
       return {
         content: [
           {
             type: "text",
-            text: text || "未命中",
+            text: results.length ? JSON.stringify(results, null, 2) : "[]",
           },
         ],
-        details: { query: params.query },
+        details: { query: params.query, count: results.length },
       };
     },
   };
 }
 
-function createReadVaultTool(vault: VaultService): AgentTool<typeof ReadVaultParams> {
+function createVaultReadTool(vault: VaultService): AgentTool<typeof VaultReadParams> {
   return {
-    name: "read_vault",
+    name: "vault_read",
     label: "读取 Vault",
     description: "读取一个 vault markdown 文件全文。",
-    parameters: ReadVaultParams,
+    parameters: VaultReadParams,
     execute: async (_id, params) => {
       const file = vault.read(params.path);
       return {
         content: [
           {
             type: "text",
-            text: `---\n${JSON.stringify(file.frontmatter, null, 2)}\n---\n${file.body}`,
+            text: JSON.stringify(file, null, 2),
           },
         ],
         details: { path: file.path },
-      };
-    },
-  };
-}
-
-function createUpdateFrontmatterTool(
-  vault: VaultService,
-): AgentTool<typeof UpdateFrontmatterParams> {
-  return {
-    name: "update_frontmatter",
-    label: "更新 Frontmatter",
-    description:
-      "只更新 vault 文件 frontmatter，不修改正文。fields 必须通过 frontmatter_json 传 JSON 对象字符串。",
-    parameters: UpdateFrontmatterParams,
-    execute: async (_id, params) => {
-      const fields = JSON.parse(params.frontmatter_json) as Record<string, any>;
-      vault.updateFrontmatter(params.path, fields);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `已更新 frontmatter：${params.path}`,
-          },
-        ],
-        details: { path: params.path, fields },
-      };
-    },
-  };
-}
-
-function createPromoteTool(vault: VaultService): AgentTool<typeof PromoteParams> {
-  return {
-    name: "promote",
-    label: "晋升知识",
-    description:
-      "把 Inbox 文件移动到 Garden，并只更新 frontmatter。不会修改正文。",
-    parameters: PromoteParams,
-    execute: async (_id, params) => {
-      const nextPath = vault.promote(params.path, {
-        my_note: params.my_note,
-        reacted_at: nowISO(),
-      });
-      return {
-        content: [
-          {
-            type: "text",
-            text: `已晋升到 Garden：${nextPath}`,
-          },
-        ],
-        details: { path: nextPath },
       };
     },
   };

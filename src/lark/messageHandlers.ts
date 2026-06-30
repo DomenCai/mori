@@ -5,13 +5,12 @@ import type {
   SendOptions,
 } from "@larksuite/channel";
 import { AgentService, type BaseAgent } from "../agent/index.js";
-import type { EpisodeSource } from "../diary/service.js";
 import { distillDiaryEntry } from "../diary/distill.js";
 import type { IngestedMessage } from "../ingest/message.js";
 import { larkMessageId } from "./ingest.js";
 import { formatLensPrompt, type ParsedLens } from "./lenses.js";
 import { isWebSearchConfigured } from "../agent/tools/web-search.js";
-import { createAgentCardState, renderAgentCard } from "./cards.js";
+import { createAgentCardState, renderAgentCard, renderClipCard } from "./cards.js";
 import {
   appendCardText,
   startCardTool,
@@ -23,6 +22,7 @@ import {
 } from "./agentCardEvents.js";
 import { logger } from "../log.js";
 import { nowISO } from "../utils.js";
+import { fetchArticle } from "../knowledge/fetch.js";
 
 const larkLog = logger("lark");
 const diaryLog = logger("diary");
@@ -341,7 +341,6 @@ async function handleChatMessageInLock(
   messageService.saveUserMessage(message);
   agentService.recordUserMessage(scopeId, message.id, message.occurredAt);
   agentService.recordActivity(scopeId, messageTime);
-  await promoteKnowledgeIfNeeded(message, agentService);
   larkLog.info(`处理对话 scope=${scopeId} type=${chatType}`);
 
   const stream = chatType === "dm" ? sendAgentReplyText : streamAgentReply;
@@ -476,41 +475,106 @@ export async function handleNotificationMessage(
   const messageService = agentService.getMessageService();
   messageService.saveUserMessage(message);
   if (!msg.replyToMessageId) {
-    await channel.send(msg.chatId, {
-      text: "通知群只捕获对知识卡片的回复；要深聊请用话题回复。",
-    });
+    await channel.send(msg.chatId, { text: notificationReplyHint() });
     return true;
   }
 
-  const parent = message.replyTo
-    ? messageService.get(message.replyTo)
-    : null;
-  if (!parent?.knowledge_path) return false;
+  await channel.send(msg.chatId, { text: notificationReplyHint() }, replyOptions(msg));
+  return true;
+}
 
-  const nextPath = await promoteKnowledgeIfNeeded(message, agentService);
-  const source: EpisodeSource = {
-    conversationId: message.conversationId,
-    messageId: message.id,
-    startedAt: message.occurredAt,
-    endedAt: message.occurredAt,
-  };
-  agentService.getDiaryService().saveFallbackEpisode(
-    source,
-    `用户对知识卡片 ${nextPath ?? parent.knowledge_path} 的反应：${message.content}`,
+function notificationReplyHint(): string {
+  return "长按通知内容，创建话题可以继续聊；要收藏这条通知，请回复它发送 /clip。";
+}
+
+export async function handleClipMessage(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  channel: LarkChannel,
+  agentService: AgentService,
+): Promise<void> {
+  const scopeId = message.conversationId;
+  await agentService.withScopeLock(scopeId, () =>
+    handleClipMessageInLock(msg, message, channel, agentService),
   );
+}
 
-  const sent = await channel.send(msg.chatId, {
-    text: "已收藏，并记下你的看法。",
-  }, { replyTo: msg.messageId });
-  messageService.saveAssistantMessage({
+async function handleClipMessageInLock(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  channel: LarkChannel,
+  agentService: AgentService,
+): Promise<void> {
+  if (msg.threadId) {
+    await handleChatMessageInLock(msg, message, channel, agentService, "thread");
+    return;
+  }
+  if (msg.replyToMessageId || msg.rootId) {
+    await channel.send(msg.chatId, {
+      text: "长按收藏反馈卡，创建话题可以继续聊这篇。",
+    }, replyOptions(msg));
+    return;
+  }
+
+  try {
+    await channel.addReaction(msg.messageId, "OnIt");
+  } catch (err) {
+    larkLog.warn(`收藏群回执表情失败 message=${msg.messageId}`, err);
+  }
+
+  await saveClipContent(msg, message, message.content, channel, agentService);
+}
+
+export async function saveClipContent(
+  msg: NormalizedMessage,
+  message: IngestedMessage,
+  content: string,
+  channel: LarkChannel,
+  agentService: AgentService,
+  options: { originNote?: string } = {},
+): Promise<void> {
+  const url = parsePureUrl(content);
+  const article = url
+    ? await fetchArticle(url, channel.rawClient)
+    : {
+        title: truncatePlain(firstLine(content), 40),
+        body: content,
+        source_url: "",
+        fetch_status: "ok" as const,
+      };
+  const result = agentService.getVaultService().ingestNote({
+    title: article.title || url || truncatePlain(firstLine(content), 40),
+    body: article.body,
+    source_type: "clip",
+    source_url: url ?? undefined,
+    origin_note: options.originNote ?? content,
+  });
+
+  const title = result.status === "duplicate"
+    ? "📁 已收藏过"
+    : article.fetch_status === "failed"
+      ? "⚠️ 抓取失败"
+      : "✅ 已收藏";
+  const body = clipCardBody({
+    title: result.title,
+    url,
+    body: article.body,
+    failed: article.fetch_status === "failed",
+  });
+  const sent = await channel.send(
+    msg.chatId,
+    { card: renderClipCard(title, body) },
+    replyOptions(msg),
+  );
+  agentService.getMessageService().saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: message.conversationId,
     conversationType: message.conversationType,
-    content: "已收藏，并记下你的看法。",
+    content: body,
     replyTo: message.id,
+    knowledgePath: result.path,
   });
-  return true;
 }
 
 async function formatDiaryPrompt(
@@ -565,21 +629,37 @@ function buildLensReplyTarget(
   return parent?.content.trim() ?? "";
 }
 
-async function promoteKnowledgeIfNeeded(
-  message: IngestedMessage,
-  agentService: AgentService,
-): Promise<string | null> {
-  if (!message.replyTo) return null;
-  const messageService = agentService.getMessageService();
-  const parent = messageService.get(message.replyTo);
-  if (!parent?.knowledge_path) return null;
+function parsePureUrl(text: string): string | null {
+  const value = text.trim();
+  if (!/^https?:\/\/\S+$/i.test(value)) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
-  const nextPath = agentService.getVaultService().promote(parent.knowledge_path, {
-    my_note: message.content,
-    reacted_at: message.occurredAt || nowISO(),
-  });
-  messageService.updateKnowledgePath(parent.id, nextPath);
-  return nextPath;
+function firstLine(text: string): string {
+  return text.trim().split(/\r?\n/)[0]?.trim() || "未命名";
+}
+
+function truncatePlain(text: string, max: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
+
+function clipCardBody(input: {
+  title: string;
+  url: string | null;
+  body: string;
+  failed: boolean;
+}): string {
+  if (input.failed) {
+    return `${input.url ?? input.title}\n\n已记下链接，但内容抓不到。`;
+  }
+  const preview = truncatePlain(input.body, 80);
+  return preview ? `《${input.title}》\n\n${preview}` : `《${input.title}》`;
 }
 
 function replyOptions(msg: NormalizedMessage): SendOptions {

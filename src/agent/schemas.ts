@@ -142,37 +142,22 @@ export const WebSearchParams = Type.Object({
 });
 export type WebSearchData = Static<typeof WebSearchParams>;
 
-export const SaveToGardenParams = Type.Object({
+export const VaultSaveParams = Type.Object({
   title: Type.String(),
-  domain: Type.String(),
-  brief: Type.String(),
   body: Type.String({ description: "markdown 正文，创建后 Agent 不再编辑" }),
-  tags: Type.Optional(Type.Array(Type.String())),
+  source_type: Type.Union([Type.Literal("clip"), Type.Literal("manual")]),
   source_url: Type.Optional(Type.String()),
+  origin_note: Type.Optional(Type.String()),
 });
-export type SaveToGardenData = Static<typeof SaveToGardenParams>;
+export type VaultSaveData = Static<typeof VaultSaveParams>;
 
-export const GrepVaultParams = Type.Object({
-  query: Type.String(),
-  scope: Type.Optional(Type.String({ description: "vault 相对路径，可省略" })),
+export const VaultSearchParams = Type.Object({
+  query: Type.String({ description: "搜索关键词；空字符串表示取最近收藏" }),
+  k: Type.Optional(Type.Number({ description: "最多返回条数", default: 10 })),
 });
-export type GrepVaultData = Static<typeof GrepVaultParams>;
+export type VaultSearchData = Static<typeof VaultSearchParams>;
 
-export const ReadVaultParams = Type.Object({
+export const VaultReadParams = Type.Object({
   path: Type.String({ description: "vault 相对路径" }),
 });
-export type ReadVaultData = Static<typeof ReadVaultParams>;
-
-export const UpdateFrontmatterParams = Type.Object({
-  path: Type.String({ description: "vault 相对路径" }),
-  frontmatter_json: Type.String({
-    description: "要覆盖进 frontmatter 的 JSON 对象字符串；不会修改正文",
-  }),
-});
-export type UpdateFrontmatterData = Static<typeof UpdateFrontmatterParams>;
-
-export const PromoteParams = Type.Object({
-  path: Type.String({ description: "Inbox 文件的 vault 相对路径" }),
-  my_note: Type.Optional(Type.String({ description: "用户为什么收藏/怎么看" })),
-});
-export type PromoteData = Static<typeof PromoteParams>;
+export type VaultReadData = Static<typeof VaultReadParams>;

@@ -1,6 +1,6 @@
 -- Agent session 恢复索引：进程重启或冷启动回复时定位 JSONL transcript 的权威来源。
 -- 只记录交互式 chat type（dm / topic / thread / diary），内部一次性 scope
--- （schedule / distill / daily_memory / consolidation / knowledge_index）不进入。
+-- （schedule / distill / daily_memory / consolidation / review）不进入。
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
   session_path TEXT NOT NULL,

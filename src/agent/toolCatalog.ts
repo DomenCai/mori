@@ -53,7 +53,7 @@ export function createToolCatalog(
     createSetStorylineStatusTool(deps.memoryService, () => runtime().runId),
     createMergeStorylinesTool(deps.memoryService, () => runtime().runId),
     createSearchMemoryTool(deps.db),
-    ...createKnowledgeTools(deps.vaultService),
+    ...createKnowledgeTools(deps.vaultService, deps.channel),
   ];
 
   if (deps.channel && deps.registry) {

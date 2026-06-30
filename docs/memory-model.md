@@ -41,7 +41,7 @@ chapter 只用于把握总体阶段。具体回应某个项目、关系或状态
 
 chapter 的红线比普通 storyline 更严：它只能描述处境与主题，不下心理状态、人格、关系或健康结论。月度即过期的工具判断、战术偏好或阶段性做法也不再写入 profile；阶段性主线归 chapter，可复用知识归 vault，都不算就不写。
 
-`memory/profile.md` 和 `memory/chapter.md` 是可编辑外部界面。程序更新画像或主线时会同时写 DB 和文件；用户手动改文件后，下一个新 session 会读取文件，同步回 DB，并记录一条 `manual_file_edit` 修订。已有热 session 不会中途重载。
+`memory/profile.md` 和 `memory/chapter.md` 是可编辑外部界面。程序更新画像或主线时会同时写 DB 和文件；用户手动改文件后，下一次用户 turn、`/profile` 或 `/chapter` 查看会读取文件，同步回 DB，并记录一条 `manual_file_edit` 修订。已经发出的单次模型请求不会中途改变，但同一个热 session 的下一轮会拿到新内容。
 
 ## storylines：中间叙事层
 
@@ -81,7 +81,7 @@ nudge 有代码层硬闸：连续沉默少于 3 天不评估；距上次实际 `
 | 路径 | 实时写 | 画像 / 当前主线 |
 |---|---|---|
 | 日记群 | episode | ❌ 走周合并 |
-| 通知群回复知识卡 | episode、promote 知识卡 | ❌ 走周合并 |
+| 通知群回复知识卡 | episode，知识文件保持原路径 | ❌ 走周合并 |
 | DM / 话题 / 子话题 | 关闭时蒸馏 episode | ❌ 走周合并 |
 | daily_memory | storylines、daily run 审计、可选 send_checkin | ❌ |
 | 周合并 | weekly summary、**画像**、**当前主线** | ✅ 唯一自动写画像和当前主线路径 |

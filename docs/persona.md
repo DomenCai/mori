@@ -1,10 +1,10 @@
 # Agent 人格与声音
 
-这份文档记录 agent 的声音定调和为什么是这样。内置提示词文本在仓库 `agent/` 下；生产态可用 `~/.mori/agent/soul.md` 和 `~/.mori/agent/response_style.md` 覆盖，新 session 生效（seed 规则见[配置参考](configuration.md)）。
+这份文档记录 agent 的声音定调和为什么是这样。内置提示词文本在仓库 `agent/` 下；生产态可用 `~/.mori/agent/soul.md` 和 `~/.mori/agent/response_style.md` 覆盖，下一次构造 system prompt 生效（seed 规则见[配置参考](configuration.md)）。
 
 ## 三个文件分工
 
-system prompt 由 `src/agent/prompts.ts` 把三块按顺序拼起来，后面再接动态记忆（画像 / 当前主线 / storylines / episodes / 知识地图）：
+system prompt 由 `src/agent/prompts.ts` 把四块按顺序拼起来，后面再接动态记忆（画像 / 当前主线 / storylines / episodes）。知识库不常驻注入，由 `knowledge_policy.md` 指导 agent 按需查 `vault_search` / `vault_read`：
 
 | 文件 | 唯一职责 |
 |---|---|
@@ -19,7 +19,7 @@ system prompt 由 `src/agent/prompts.ts` 把三块按顺序拼起来，后面再
 | 层 | 内容 | 是否变化 |
 |---|---|---|
 | 人格内核 | `soul.md` + `response_style.md`，决定是谁、怎么说话 | 全局共享 |
-| 记忆上下文 | 画像、当前主线、storylines、episodes、知识地图 | 随记忆更新 |
+| 记忆上下文 | 画像、当前主线、storylines、episodes | 随记忆更新 |
 | 场景纪律 | 日记、私聊、主题群、thread 的工具与边界 | 按 chatType |
 | 当下出招 | `/think` 下钻、`/rank` 降秩、`/plain` 白话 | 按命令 |
 

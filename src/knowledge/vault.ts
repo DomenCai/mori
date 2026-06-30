@@ -3,7 +3,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   readdirSync,
   statSync,
   writeFileSync,
@@ -12,18 +11,28 @@ import { basename, dirname, extname, join, relative } from "node:path";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import { parse, stringify } from "yaml";
-import { knowledgeIndexPath, loadSetting, vaultDir } from "../config.js";
-import { nowISO, businessDateKey } from "../utils.js";
+import { vaultDir } from "../config.js";
+import { businessDateKey, nowISO } from "../utils.js";
 
 const execFileAsync = promisify(execFile);
 
-export interface KnowledgeArticle {
+export type VaultSourceType = "clip" | "conversation" | "review" | "manual";
+
+export interface IngestNoteArgs {
   title: string;
-  domain: string;
-  tags?: string[];
-  brief: string;
   body: string;
+  source_type: VaultSourceType;
   source_url?: string;
+  origin_note?: string;
+  path?: string;
+  period?: string;
+  covers?: string[];
+}
+
+export interface IngestNoteResult {
+  path: string;
+  status: "saved" | "duplicate";
+  title: string;
 }
 
 export interface VaultFile {
@@ -32,79 +41,62 @@ export interface VaultFile {
   body: string;
 }
 
+export interface VaultSearchResult {
+  title: string;
+  source_type: string;
+  saved_at: string;
+  snippet: string;
+  path: string;
+}
+
 export class VaultService {
-  constructor(private root = vaultDir) {}
+  constructor(private root = vaultDir) { }
 
   ensureBaseDirs(): void {
-    mkdirSync(join(this.root, "Inbox"), { recursive: true, mode: 0o700 });
-    mkdirSync(join(this.root, "Garden"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(this.root, "notes"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(this.root, "reviews"), { recursive: true, mode: 0o700 });
   }
 
-  writeInbox(
-    inboxName: string,
-    slug: string,
-    article: KnowledgeArticle,
-  ): { path: string; existed: boolean } {
+  ingestNote(args: IngestNoteArgs): IngestNoteResult {
     this.ensureBaseDirs();
-    const dir = join(this.root, "Inbox", inboxName, monthKey(),);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = join(dir, `${slug}.md`);
-    const relPath = this.toRelative(file);
-    if (existsSync(file)) return { path: relPath, existed: true };
-    writeFileSync(file, renderMarkdown(article, "inbox"), { mode: 0o600 });
-    return { path: relPath, existed: false };
-  }
-
-  saveToGarden(
-    article: KnowledgeArticle,
-    slug = slugify(article.title),
-  ): { path: string; existed: boolean } {
-    this.ensureBaseDirs();
-    const dir = join(this.root, "Garden", monthKey());
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = uniquePath(join(dir, `${slug}.md`));
-    const existed = existsSync(file);
-    if (!existed) {
-      writeFileSync(file, renderMarkdown(article, "kept"), { mode: 0o600 });
-    }
-    return { path: this.toRelative(file), existed };
-  }
-
-  promote(relPath: string, fields: Record<string, any> = {}): string {
-    this.ensureBaseDirs();
-    if (relPath.startsWith("Garden/")) {
-      this.updateFrontmatter(relPath, {
-        ...fields,
-        status: "kept",
-        reacted_at: fields.reacted_at ?? nowISO(),
-      });
-      return relPath;
+    const sourceUrl = args.source_url ? canonicalizeUrl(args.source_url) : undefined;
+    if (!args.path && sourceUrl) {
+      const existing = this.findByCanonicalUrl(sourceUrl);
+      if (existing) {
+        return {
+          path: existing.path,
+          status: "duplicate",
+          title: String(existing.frontmatter.title ?? existing.path),
+        };
+      }
     }
 
-    const source = this.resolve(relPath);
-    const dir = join(this.root, "Garden", monthKey());
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const target = uniquePath(join(dir, basename(source)));
-
-    renameSync(source, target);
-    const targetRelPath = this.toRelative(target);
-    this.updateFrontmatter(targetRelPath, {
-      ...fields,
-      status: "kept",
-      reacted_at: fields.reacted_at ?? nowISO(),
-    });
-    return targetRelPath;
-  }
-
-  updateFrontmatter(relPath: string, fields: Record<string, any>): void {
-    const file = this.resolve(relPath);
-    const raw = readFileSync(file, "utf-8");
-    const parsed = parseMarkdown(raw);
+    const relPath = args.path ?? this.nextNotePath(args.title);
+    const absPath = this.resolve(relPath);
+    mkdirSync(dirname(absPath), { recursive: true, mode: 0o700 });
+    const title = args.title.trim() || "未命名";
+    const existingSavedAt = args.path && existsSync(absPath)
+      ? this.safeRead(this.toRelative(absPath))?.frontmatter.saved_at
+      : undefined;
     writeFileSync(
-      file,
-      replaceFrontmatter(raw, { ...parsed.frontmatter, ...fields }),
+      absPath,
+      renderParsed(
+        cleanFrontmatter({
+          title,
+          source_type: args.source_type,
+          source_url: sourceUrl,
+          origin_note: args.origin_note,
+          saved_at: typeof existingSavedAt === "string" && existingSavedAt
+            ? existingSavedAt
+            : nowISO(),
+          period: args.period,
+          covers: args.covers,
+        }),
+        args.body,
+      ),
       { mode: 0o600 },
     );
+    return { path: this.toRelative(absPath), status: "saved", title };
   }
 
   read(relPath: string): VaultFile {
@@ -114,86 +106,60 @@ export class VaultService {
     return {
       path: this.toRelative(file),
       frontmatter: parsed.frontmatter,
-      body: parsed.body,
+      body: parsed.body.trim(),
     };
   }
 
-  async grep(query: string, scope?: string): Promise<string> {
+  async search(query: string, k = 10): Promise<VaultSearchResult[]> {
     this.ensureBaseDirs();
-    const target = scope ? this.resolve(scope) : this.root;
-    try {
-      const { stdout } = await execFileAsync("rg", [
-        "--line-number",
-        "--fixed-strings",
-        query,
-        target,
-      ]);
-      return stdout
-        .split("\n")
-        .filter(Boolean)
-        .slice(0, 20)
-        .map((line) => line.replace(`${this.root}/`, ""))
-        .join("\n");
-    } catch {
-      return fallbackGrep(target, query, this.root);
+    const limit = clampLimit(k);
+    if (!query.trim()) {
+      return this.listFrontmatter()
+        .sort(compareSavedAtDesc)
+        .slice(0, limit)
+        .map((file) => ({
+          title: String(file.frontmatter.title ?? file.path),
+          source_type: String(file.frontmatter.source_type ?? ""),
+          saved_at: String(file.frontmatter.saved_at ?? ""),
+          snippet: "",
+          path: file.path,
+        }));
     }
+
+    const lines = await this.grepLines(query);
+    return lines.slice(0, limit).map((line) => {
+      const file = this.safeRead(line.path);
+      return {
+        title: String(file?.frontmatter.title ?? line.path),
+        source_type: String(file?.frontmatter.source_type ?? ""),
+        saved_at: String(file?.frontmatter.saved_at ?? ""),
+        snippet: truncate(line.text.trim(), 200),
+        path: line.path,
+      };
+    });
   }
 
   listFrontmatter(): VaultFile[] {
     this.ensureBaseDirs();
-    return walkMarkdown(this.root)
-      .filter((file) => this.toRelative(file) !== ".index.md")
-      .map((file) => {
-        const relPath = this.toRelative(file);
+    const files: VaultFile[] = [];
+    for (const file of [
+      ...walkMarkdown(join(this.root, "notes")),
+      ...walkMarkdown(join(this.root, "reviews")),
+    ]) {
+      const relPath = this.toRelative(file);
+      try {
         const raw = readFileSync(file, "utf-8");
         const parsed = parseMarkdown(raw);
-        return {
+        files.push({
           path: relPath,
           frontmatter: parsed.frontmatter,
           body: "",
-        };
-      });
-  }
-
-  buildDeterministicIndex(): string {
-    const files = this.listFrontmatter().filter((file) => file.path !== ".index.md");
-    const groups = new Map<string, VaultFile[]>();
-    for (const file of files) {
-      const domain = String(file.frontmatter.domain ?? "未分类");
-      groups.set(domain, [...(groups.get(domain) ?? []), file]);
-    }
-
-    const lines = ["# 知识地图", "", `updated_at: ${nowISO()}`, ""];
-    for (const [domain, group] of [...groups.entries()].sort()) {
-      lines.push(`## ${domain}（${group.length} 篇）`);
-      const tags = new Set<string>();
-      for (const file of group) {
-        for (const tag of Array.isArray(file.frontmatter.tags) ? file.frontmatter.tags : []) {
-          tags.add(String(tag));
-        }
+        });
+      } catch (error) {
+        warnVault(`跳过无效 frontmatter: ${relPath}: ${formatErrorMessage(error)}`);
       }
-      if (tags.size > 0) lines.push(`tags: ${[...tags].slice(0, 12).join(", ")}`);
-      for (const file of group.slice(0, 8)) {
-        lines.push(
-          `- ${file.frontmatter.title ?? file.path}: ${file.frontmatter.brief ?? "无摘要"} (${file.path})`,
-        );
-      }
-      lines.push("");
     }
-
-    mkdirSync(dirname(knowledgeIndexPath), { recursive: true, mode: 0o700 });
-    writeFileSync(knowledgeIndexPath, lines.join("\n").trim() + "\n", {
-      mode: 0o600,
-    });
-    return knowledgeIndexPath;
-  }
-
-  writeKnowledgeIndex(content: string): string {
-    mkdirSync(dirname(knowledgeIndexPath), { recursive: true, mode: 0o700 });
-    writeFileSync(knowledgeIndexPath, content.trim() + "\n", {
-      mode: 0o600,
-    });
-    return knowledgeIndexPath;
+    return files;
   }
 
   toRelative(absPath: string): string {
@@ -209,45 +175,57 @@ export class VaultService {
     }
     return abs;
   }
-}
 
-export async function fetchArticle(url: string): Promise<KnowledgeArticle> {
-  const { timeoutMs, userAgent } = loadSetting().http.fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "user-agent": userAgent,
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`抓取失败 ${response.status}: ${url}`);
+  private nextNotePath(title: string): string {
+    const dir = join(this.root, "notes", monthKey());
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return this.toRelative(uniquePath(join(dir, `${slugify(title)}.md`)));
+  }
+
+  private findByCanonicalUrl(sourceUrl: string): VaultFile | null {
+    return this.listFrontmatter().find((file) => {
+      const existing = file.frontmatter.source_url;
+      return typeof existing === "string" && canonicalizeUrl(existing) === sourceUrl;
+    }) ?? null;
+  }
+
+  private safeRead(relPath: string): VaultFile | null {
+    try {
+      return this.read(relPath);
+    } catch {
+      return null;
     }
-    const html = await response.text();
-    const title = extractTitle(html) ?? url;
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<[^>]+>/g, "\n")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+  }
 
-    return {
-      title,
-      domain: "未分类",
-      tags: [],
-      brief: text.slice(0, 160) || title,
-      body: `# ${title}\n\n${text}`,
-      source_url: url,
-    };
-  } finally {
-    clearTimeout(timer);
+  private async grepLines(query: string): Promise<Array<{ path: string; text: string }>> {
+    const roots = [join(this.root, "notes"), join(this.root, "reviews")]
+      .filter((path) => existsSync(path));
+    if (roots.length === 0) return [];
+    try {
+      const { stdout } = await execFileAsync("rg", [
+        "--line-number",
+        "--fixed-strings",
+        "--",
+        query,
+        ...roots,
+      ], {
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      return stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const parsed = parseRgLine(line, this.root);
+          return parsed;
+        })
+        .filter((line): line is { path: string; text: string } => Boolean(line));
+    } catch (error) {
+      const code = getExecErrorCode(error);
+      if (code === 1) return [];
+      if (code === "ENOENT") return fallbackGrep(roots, query, this.root);
+      warnVault(`rg 检索失败: ${formatErrorMessage(error)}`);
+      return [];
+    }
   }
 }
 
@@ -262,33 +240,14 @@ export function slugify(input: string): string {
   return base || `note-${Date.now().toString(36)}`;
 }
 
-function renderMarkdown(article: KnowledgeArticle, status: "inbox" | "kept"): string {
-  return renderParsed(
-    {
-      title: article.title,
-      domain: article.domain,
-      tags: article.tags ?? [],
-      brief: article.brief,
-      status,
-      source_url: article.source_url,
-      saved_at: nowISO(),
-    },
-    article.body,
-  );
-}
-
 function renderParsed(frontmatter: Record<string, any>, body: string): string {
-  return `${renderFrontmatter(frontmatter)}${body.trim()}\n`;
+  const text = body.trim();
+  return `${renderFrontmatter(frontmatter)}${text ? `${text}\n` : ""}`;
 }
 
 function renderFrontmatter(frontmatter: Record<string, any>): string {
   const yaml = stringify(frontmatter).trim();
-  return `---\n${yaml}\n---\n`;
-}
-
-function replaceFrontmatter(raw: string, frontmatter: Record<string, any>): string {
-  const parsed = parseMarkdown(raw);
-  return `${renderFrontmatter(frontmatter)}${raw.slice(parsed.bodyStart)}`;
+  return `---\n${yaml}\n---\n\n`;
 }
 
 function parseMarkdown(raw: string): {
@@ -358,26 +317,93 @@ function walkMarkdown(root: string): string[] {
   if (!existsSync(root)) return [];
   const stat = statSync(root);
   if (stat.isFile()) return root.endsWith(".md") ? [root] : [];
-  return readdirSync(root)
-    .flatMap((name) => walkMarkdown(join(root, name)));
+  return readdirSync(root).flatMap((name) => walkMarkdown(join(root, name)));
 }
 
-function fallbackGrep(target: string, query: string, root: string): string {
-  const files = walkMarkdown(target);
-  const hits: string[] = [];
-  for (const file of files) {
+function fallbackGrep(
+  roots: string[],
+  query: string,
+  root: string,
+): Array<{ path: string; text: string }> {
+  const hits: Array<{ path: string; text: string }> = [];
+  for (const file of roots.flatMap(walkMarkdown)) {
     const lines = readFileSync(file, "utf-8").split("\n");
-    lines.forEach((line, index) => {
+    lines.forEach((line) => {
       if (line.includes(query)) {
-        hits.push(`${relative(root, file)}:${index + 1}:${line}`);
+        hits.push({ path: relative(root, file), text: line });
       }
     });
   }
-  return hits.slice(0, 20).join("\n");
+  return hits.slice(0, 20);
 }
 
-function extractTitle(html: string): string | null {
-  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (!match) return null;
-  return match[1].replace(/\s+/g, " ").trim();
+function parseRgLine(line: string, root: string): { path: string; text: string } | null {
+  const first = line.indexOf(":");
+  if (first < 0) return null;
+  const second = line.indexOf(":", first + 1);
+  if (second < 0) return null;
+  return {
+    path: relative(root, line.slice(0, first)),
+    text: line.slice(second + 1),
+  };
+}
+
+function cleanFrontmatter(frontmatter: Record<string, any>): Record<string, any> {
+  return Object.fromEntries(
+    Object.entries(frontmatter).filter(([, value]) => {
+      if (value === undefined || value === null || value === "") return false;
+      if (Array.isArray(value) && value.length === 0) return false;
+      return true;
+    }),
+  );
+}
+
+function canonicalizeUrl(input: string): string {
+  try {
+    const url = new URL(input);
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (key.toLowerCase().startsWith("utm_")) url.searchParams.delete(key);
+    }
+    const text = url.toString();
+    return text.endsWith("/") ? text.slice(0, -1) : text;
+  } catch {
+    return input.trim();
+  }
+}
+
+function clampLimit(k: number): number {
+  if (!Number.isFinite(k)) return 10;
+  return Math.max(1, Math.min(50, Math.trunc(k)));
+}
+
+function compareSavedAtDesc(a: VaultFile, b: VaultFile): number {
+  const left = asTrimmedString(a.frontmatter.saved_at);
+  const right = asTrimmedString(b.frontmatter.saved_at);
+  if (!left && !right) return a.path.localeCompare(b.path);
+  if (!left) return 1;
+  if (!right) return -1;
+  return right.localeCompare(left);
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getExecErrorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function warnVault(message: string): void {
+  console.warn(`[vault] ${message}`);
 }

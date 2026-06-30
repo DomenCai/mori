@@ -5,7 +5,7 @@
 ## 前置
 
 - Node ≥ 22.19、pnpm 10（`packageManager` 已锁定版本）
-- macOS 需 Xcode Command Line Tools —— `better-sqlite3` 是 native 模块，装依赖时本地编译
+- macOS 通常不需要额外编译器；`better-sqlite3` 默认下载预编译二进制。只有拿不到匹配 prebuild 时才需要 Xcode Command Line Tools 本地编译。
 
 ## 数据根：开发态 vs 生产态
 
@@ -35,14 +35,14 @@ pnpm dev
 - `data/setting.json` —— 声明 provider、模型、chatType 档位和运行默认值。`apiKeyEnv` 指向环境变量名。
 - `.env` —— 填上面 `apiKeyEnv` 对应的 key（如 `ANTHROPIC_API_KEY=sk-ant-...`）。
 
-`chat_types` 直接把 `dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`knowledge_index` 映射到一个 `model_profile`。换模型只改 `setting.json`，不动代码。
+`chat_types` 直接把 `dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`review` 映射到一个 `model_profile`。换模型只改 `setting.json`，不动代码。
 
 ## 日常开发
 
 - `pnpm dev` —— 前台运行 + 文件改动热重载，日志打到终端并按天落到 `data/logs/YYYY-MM-DD.log`。
 - `pnpm build` —— `tsc` 类型检查并编译到 `dist/`，随后复制 `src/storage/schema.sql` 和 `src/storage/migrations/*.sql` 到 `dist/storage/`，再写入 `dist/build-info.json`（CLI 安装时由 `prepare` 自动触发，平时不用手跑）。
-- 改内置 prompt —— 直接编辑 `agent/` 下的 `soul.md` / `response_style.md` / `memory_policy.md`，新 session 生效。
-- 改画像或当前主线 —— 编辑 `data/memory/profile.md` / `data/memory/chapter.md`，新 session 生效。
+- 改内置 prompt —— 直接编辑 `agent/` 下的 `soul.md` / `response_style.md` / `memory_policy.md`，下一次构造 system prompt 生效。
+- 改画像或当前主线 —— 编辑 `data/memory/profile.md` / `data/memory/chapter.md`，下一次用户 turn 或查看命令会同步进 SQLite。
 
 ## 日志
 
@@ -62,13 +62,13 @@ LOG_LEVEL=debug pnpm dev   # debug | info（默认） | warn | error
 
 Agent transcript 由 pi-agent-core 的 `JsonlSessionRepo` 维护成 JSONL。本应用覆盖了默认的扁平 cwd 编码，改成按 `chatType/月份` 嵌套分桶，例如 `diary/2026-06/`、`dm/2026-06/`、`topic/2026-06/`。文件名用 `setting.time.timezone` 对应的本地时间加 session id，例如 `2026-06-19T01-40-22-483+08-00_<session_id>.jsonl`。
 
-`agent_sessions` 与 `message_session_entries`（见 `src/storage/schema.sql`）是 JSONL transcript 的恢复索引：进程重启或用户回复历史消息时，从这两张表定位 transcript 文件并 reopen。索引只追踪交互式 chat type（`dm` / `topic` / `thread` / `diary`），不收录内部任务（`schedule` / `distill` / `daily_memory` / `consolidation` / `knowledge_index`）和 backfill。恢复规则见 [会话与冷却规则](sessions.md)。
+`agent_sessions` 与 `message_session_entries`（见 `src/storage/schema.sql`）是 JSONL transcript 的恢复索引：进程重启或用户回复历史消息时，从这两张表定位 transcript 文件并 reopen。索引只追踪交互式 chat type（`dm` / `topic` / `thread` / `diary`），不收录内部任务（`schedule` / `distill` / `daily_memory` / `consolidation` / `review`）和 backfill。恢复规则见 [会话与冷却规则](sessions.md)。
 
 ## Agent runtime
 
 外部调用统一从 `src/agent/index.ts` 导出的 `AgentService` 进入。`AgentService` 管 active agent 池、per-scope lock、会话恢复、idle cleanup 和一次性 agent runner；`HarnessFactory` 负责创建或 reopen pi-agent-core harness、装配工具、注册 `SessionRegistry`；`AgentRuntime` 是 `BaseAgent` 到 harness 的薄壳。
 
-具体运行形态放在 `src/agent/agents/`：`ChatAgent` 覆盖 `dm` / `topic` / `thread`，`DiaryAgent` 覆盖日记群，`DistillAgent` / `KnowledgeIndexAgent` / `ConsolidationAgent` / `DailyMemory*Agent` / `ScheduleAgent` 是一次性 agent。业务编排不要直接操作 harness subscribe 模板；新增一次性任务优先通过 `AgentService.withOneShotAgent()` 和具体 `OneShotAgent` 子类暴露的 public `run*` 方法接入。
+具体运行形态放在 `src/agent/agents/`：`ChatAgent` 覆盖 `dm` / `topic` / `thread`，`DiaryAgent` 覆盖日记群，`DistillAgent` / `WeeklyReviewAgent` / `ConsolidationAgent` / `DailyMemory*Agent` / `ScheduleAgent` 是一次性 agent。业务编排不要直接操作 harness subscribe 模板；新增一次性任务优先通过 `AgentService.withOneShotAgent()` 和具体 `OneShotAgent` 子类暴露的 public `run*` 方法接入。
 
 ## 数据库
 
