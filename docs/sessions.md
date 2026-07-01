@@ -11,7 +11,7 @@ scope key 就是 `IngestedMessage.conversationId`，是完整 scope：
 | 类型 | scope key |
 |---|---|
 | 日记群 / 私聊 / 主题群 | `lark:chat:<chat_id>` |
-| 飞书话题 thread | `lark:thread:<chat_id>:<thread_id>` |
+| 飞书 thread / 原生 topic 内回复 | `lark:thread:<chat_id>:<thread_key>`，`thread_key` 优先用 `threadId`；只有原生 topic chat 在 SDK 只给 `rootId` 时才用非根消息的 `rootId` |
 | 历史日记导入 | `import:diary:<date>`（按天一段，跨天 reset，见 [开发指南](development.md)） |
 | 内部任务 | `weekly_consolidation` / `daily_memory_*` / `weekly_review_*` 等内部 scope |
 
@@ -106,6 +106,6 @@ SQLite 两张表（见 `src/storage/schema.sql`）：
 
 ## 会话类型从哪来
 
-收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `lark_config.json.chatBindings` 查群类型；私聊若未注册会自动登记为 `dm`。如果消息带 `threadId`，会优先作为 `thread` scope 处理。类型决定模型路由、工具集、是否按 `sessions.policies` 自动关闭。
+收到消息时，先用 `ChatRegistry.getType(chatId)` 从 `lark_config.json.chatBindings` 查群类型；私聊若未注册会自动登记为 `dm`。如果消息有真实 thread key（`threadId`，或原生 topic chat 里非根消息的 `rootId`），且绑定类型不是 `diary`，会作为 `thread` scope 处理；普通群里的 `rootId` 只表示回复引用，不会切成 thread scope。日记群里的回复仍保持 `diary` 语义。类型决定模型路由、工具集、是否按 `sessions.policies` 自动关闭。
 
 `consolidation`、`daily_memory`、`review`、`distill`、`schedule` 是内部任务 scope，不从 chat 绑定来，也不进恢复索引。

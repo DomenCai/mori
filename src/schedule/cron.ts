@@ -9,7 +9,6 @@ import { existsSync, mkdirSync } from "node:fs";
 import {
   basename,
   isAbsolute,
-  join,
   relative,
   resolve as resolvePath,
 } from "node:path";
@@ -29,8 +28,8 @@ import { MessageService } from "../storage/messages.js";
 import { scriptDir, type ScriptRuntimeConfig, type SettingConfig } from "../config.js";
 import { VaultService, type VaultFile } from "../knowledge/vault.js";
 import { isoWeekKey, isoWeekRange } from "../utils.js";
-import { renderInfoCard, renderKnowledgeCard } from "../lark/cards.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
+import { createTopicChat } from "../lark/commands.js";
 
 const log = logger("cron");
 
@@ -315,15 +314,14 @@ async function deliverScheduleResult(
     registry,
     schedule.deliver?.notifyChat?.trim() || undefined,
   );
-  const sent = await channel.send(chatId, {
-    card: renderInfoCard(output.title, output.body),
-  });
+  const markdown = notificationMarkdown(output.title, output.body);
+  const sent = await channel.send(chatId, { markdown });
   new MessageService(db).saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: larkChatConversationId(chatId),
     conversationType: "notification",
-    content: output.body,
+    content: markdown,
   });
 }
 
@@ -511,17 +509,22 @@ async function runWeeklyReview(
   if (!latest) return;
   const chatId = await ensureNotificationChat(channel, registry);
   const cardBody = `${latest.body}\n\n---\n${latest.titles.map((title) => `- ${title}`).join("\n")}`;
-  const sent = await channel.send(chatId, {
-    card: renderKnowledgeCard(`${latest.period} 收藏周报`, cardBody),
-  });
+  const markdown = notificationMarkdown(`${latest.period} 收藏周报`, cardBody);
+  const sent = await channel.send(chatId, { markdown });
   new MessageService(db).saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: larkChatConversationId(chatId),
     conversationType: "notification",
-    content: cardBody,
+    content: markdown,
     knowledgePath: latest.path,
   });
+}
+
+function notificationMarkdown(title: string, body: string): string {
+  const cleanTitle = title.trim();
+  const cleanBody = body.trim();
+  return cleanTitle ? `**${cleanTitle}**\n\n${cleanBody}` : cleanBody;
 }
 
 function missingReviewPeriods(files: VaultFile[], now: Date): string[] {
@@ -638,11 +641,10 @@ async function createNotificationChat(
   if (!ownerOpenId) {
     throw new Error("无法创建通知群：ownerOpenId 未绑定");
   }
-  const { chatId } = await channel.createChat({
+  const { chatId } = await createTopicChat(channel, {
     name,
-    description: "mori 定时投喂通知群",
-    inviteUserIds: [ownerOpenId],
-    userIdType: "open_id",
+    description: "mori 定时投喂通知话题群",
+    ownerOpenId,
   });
   registry.register(chatId, "notification", name, isDefault);
   return chatId;

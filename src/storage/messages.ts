@@ -81,6 +81,19 @@ export class MessageService {
     );
   }
 
+  findKnowledgeReplyForMessage(messageId: string): StoredMessage | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT * FROM messages
+           WHERE reply_to = ? AND role = 'assistant' AND knowledge_path IS NOT NULL
+           ORDER BY occurred_at DESC
+           LIMIT 1`,
+        )
+        .get(messageId) as StoredMessage | undefined) ?? null
+    );
+  }
+
   getConversationMessages(
     conversationId: string,
     startedAt: string,

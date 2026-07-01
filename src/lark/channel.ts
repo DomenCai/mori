@@ -48,6 +48,7 @@ export function initChannel(config: LarkConfig): LarkChannel {
       dmMode: "open",
       requireMention: false,
     },
+    resolveChatMode: true,
     logger: sdkLogger,
     loggerLevel: LARK_SDK_WARN_LEVEL,
   });

@@ -62,9 +62,10 @@ type ScheduleResult =
 - `null` / `undefined`：本窗口无投递。
 - `string`：等价于 `{ body: string }`。
 - 只要求 `body`，标题默认用 schedule name。
-- `deliver.notify:true`：推送飞书通知群；默认使用 `mori 通知`，首次投递会自动建群。
+- `deliver.notify:true`：推送飞书通知话题群；默认使用 `mori 通知`，首次投递会自动创建原生 topic chat。
 - `deliver.notifyChat`：可选通知群名称；配置后按该名称在 notification 群绑定里查找，找不到就新建同名通知群。不配置时走默认通知群，默认群用本地 `isDefault` 标记识别，不依赖群名。
 - `deliver.inbox`：历史字段，当前保留兼容但不写入 vault。
+- 通知投递使用普通 markdown 消息。要围绕通知继续聊，在通知话题里创建话题；要收藏通知内容，回复该通知发送 `/clip`。
 - 不 notify：允许静默运行。
 
 ## Script 任务
@@ -207,4 +208,4 @@ Task spec 字段：
 
 ## 收藏周报补偿
 
-`weekly_review` 是普通 cron builtin。每次运行时会计算“有新增笔记且已经结束的 ISO 周”减去 `vault/reviews/` 里已存在的 `period`，按最旧到最新补最多 4 周；只有本次生成的最新一期会推送通知群，其余只写回 vault。
+`weekly_review` 是普通 cron builtin。每次运行时会计算“有新增笔记且已经结束的 ISO 周”减去 `vault/reviews/` 里已存在的 `period`，按最旧到最新补最多 4 周；只有本次生成的最新一期会推送通知话题群，其余只写回 vault。

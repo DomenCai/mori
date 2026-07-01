@@ -1,25 +1,22 @@
-// 飞书消息 → agent 驱动 → 流式卡片回复。日记群、普通会话、话题和通知反应分流处理。
+// 飞书消息 → agent 驱动。这里负责业务分流，具体回复形态在 replies.ts。
 import type {
   LarkChannel,
   NormalizedMessage,
-  SendOptions,
 } from "@larksuite/channel";
-import { AgentService, type BaseAgent } from "../agent/index.js";
+import { AgentService } from "../agent/index.js";
 import { distillDiaryEntry } from "../diary/distill.js";
 import type { IngestedMessage } from "../ingest/message.js";
-import { larkMessageId } from "./ingest.js";
+import { larkMessageId, larkThreadKey } from "./ingest.js";
 import { formatLensPrompt, type ParsedLens } from "./lenses.js";
 import { isWebSearchConfigured } from "../agent/tools/web-search.js";
-import { createAgentCardState, renderAgentCard, renderClipCard } from "./cards.js";
+import { renderClipCard } from "./cards.js";
 import {
-  appendCardText,
-  startCardTool,
-  finishCardTool,
-  updateAgentCard,
-  extractTotalTokens,
-  getAssistantError,
-  formatError,
-} from "./agentCardEvents.js";
+  type AgentReplyResult,
+  replyModeForChat,
+  sendAgentReply,
+  sendCardReply,
+  sendTextReply,
+} from "./replies.js";
 import { logger } from "../log.js";
 import { nowISO } from "../utils.js";
 import { fetchArticle } from "../knowledge/fetch.js";
@@ -27,186 +24,12 @@ import { fetchArticle } from "../knowledge/fetch.js";
 const larkLog = logger("lark");
 const diaryLog = logger("diary");
 
-interface StreamAgentReplyOutcome {
-  promptError?: string | null;
-  successStatus?: string;
-  errorStatus?: string;
+export function isRootMessage(msg: NormalizedMessage): boolean {
+  return !msg.replyToMessageId && (!msg.rootId || msg.rootId === msg.messageId);
 }
 
-async function streamAgentReply(
-  channel: LarkChannel,
-  msg: NormalizedMessage,
-  agent: BaseAgent,
-  runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
-  log: typeof larkLog,
-): Promise<{ messageId: string; assistantText: string; messageIds: string[]; texts: string[] }> {
-  let assistantText = "";
-  const started = Date.now();
-  const sent = await channel.stream(
-    msg.chatId,
-    {
-      card: {
-        initial: renderAgentCard(createAgentCardState()),
-        producer: async (ctrl) => {
-          const cardState = createAgentCardState();
-          let promptError: string | null = null;
-          let outcome: StreamAgentReplyOutcome = {};
-          let lastTotalTokens = 0;
-
-          const unsubscribe = agent.subscribe(async (event) => {
-            if (
-              event.type === "message_update" &&
-              event.assistantMessageEvent.type === "text_delta"
-            ) {
-              assistantText += event.assistantMessageEvent.delta;
-              appendCardText(cardState, event.assistantMessageEvent.delta);
-              await ctrl.update(renderAgentCard(cardState));
-            }
-            if (event.type === "tool_execution_start") {
-              startCardTool(cardState, event);
-              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
-            }
-            if (event.type === "tool_execution_end") {
-              finishCardTool(cardState, event);
-              await updateAgentCard(ctrl, cardState, { yieldForPatch: true });
-            }
-            if (event.type === "turn_end") {
-              promptError = getAssistantError(event.message);
-              lastTotalTokens = extractTotalTokens(event.message);
-            }
-          });
-
-          try {
-            try {
-              outcome = await runPrompt() ?? {};
-              promptError = outcome.promptError ?? promptError;
-            } catch (err) {
-              promptError = formatError(err);
-              log.error("prompt 失败:", err);
-            }
-
-            const elapsed = Date.now() - started;
-            const metrics = {
-              totalTokens: lastTotalTokens,
-              contextWindow: agent.getModel().contextWindow,
-              elapsedMs: elapsed,
-            };
-
-            if (promptError) {
-              log.warn(`回复失败 chat=${msg.chatId} 耗时=${elapsed}ms: ${promptError}`);
-              cardState.terminal = "error";
-              cardState.footer = null;
-              cardState.status = outcome.errorStatus ?? `> 处理失败：${promptError}`;
-              cardState.metrics = metrics;
-              await ctrl.update(renderAgentCard(cardState));
-              return;
-            }
-
-            log.info(`回复完成 chat=${msg.chatId} 耗时=${elapsed}ms`);
-            cardState.terminal = "done";
-            cardState.footer = null;
-            cardState.status = outcome.successStatus;
-            cardState.metrics = metrics;
-            await ctrl.update(renderAgentCard(cardState));
-          } finally {
-            unsubscribe();
-          }
-        },
-      },
-    },
-    replyOptions(msg),
-  );
-
-  return {
-    messageId: sent.messageId,
-    assistantText,
-    messageIds: [sent.messageId],
-    texts: [assistantText],
-  };
-}
-
-// 一条 assistant 消息里的文本块拼起来；非 assistant 或无文本返回空串。
-function assistantMessageText(message: unknown): string {
-  const msg = message as { role?: unknown; content?: unknown };
-  if (msg.role !== "assistant" || !Array.isArray(msg.content)) return "";
-  return msg.content
-    .map((block) => {
-      const b = block as { type?: unknown; text?: unknown };
-      return b.type === "text" && typeof b.text === "string" ? b.text : "";
-    })
-    .join("")
-    .trim();
-}
-
-// DM 不流式，且每条 assistant 消息单独发：像真人一条条蹦消息。一轮里 agent
-// 可能先说"让我查一下"、调工具、再给答案——每条 message_end 就即时发一条。
-async function sendAgentReplyText(
-  channel: LarkChannel,
-  msg: NormalizedMessage,
-  agent: BaseAgent,
-  runPrompt: () => Promise<StreamAgentReplyOutcome | void>,
-  log: typeof larkLog,
-): Promise<{ messageId: string; assistantText: string; messageIds: string[]; texts: string[] }> {
-  const texts: string[] = [];
-  const messageIds: string[] = [];
-  let lastMessageId = "";
-  let promptError: string | null = null;
-  const started = Date.now();
-
-  const unsubscribe = agent.subscribe(async (event) => {
-    if (event.type === "message_end") {
-      const text = assistantMessageText(event.message);
-      if (text) {
-        texts.push(text);
-        const sent = await channel.send(msg.chatId, { markdown: text });
-        lastMessageId = sent.messageId;
-        messageIds.push(sent.messageId);
-      }
-    }
-    if (event.type === "turn_end") {
-      promptError = getAssistantError(event.message) ?? promptError;
-    }
-  });
-
-  try {
-    const outcome = (await runPrompt()) ?? {};
-    promptError = outcome.promptError ?? promptError;
-  } catch (err) {
-    promptError = formatError(err);
-    log.error("prompt 失败:", err);
-  } finally {
-    unsubscribe();
-  }
-
-  const elapsed = Date.now() - started;
-  log[promptError ? "warn" : "info"](
-    `回复${promptError ? "失败" : "完成"} chat=${msg.chatId} 耗时=${elapsed}ms`,
-  );
-
-  if (promptError) {
-    const sent = await channel.send(
-      msg.chatId,
-      { text: texts.length ? `（出错了：${promptError}）` : `处理失败：${promptError}` },
-      replyOptions(msg),
-    );
-    lastMessageId = sent.messageId;
-    messageIds.push(sent.messageId);
-  } else if (!texts.length) {
-    const sent = await channel.send(msg.chatId, { text: "…" }, replyOptions(msg));
-    lastMessageId = sent.messageId;
-    messageIds.push(sent.messageId);
-  }
-
-  return {
-    messageId: lastMessageId,
-    assistantText: texts.join("\n\n"),
-    messageIds,
-    texts,
-  };
-}
-
-export function isDiaryEntryMessage(msg: NormalizedMessage): boolean {
-  return !msg.replyToMessageId && !msg.rootId;
+export function isThreadReplyMessage(msg: NormalizedMessage): boolean {
+  return !!larkThreadKey(msg) && !isRootMessage(msg);
 }
 
 export async function handleDiaryMessage(
@@ -257,61 +80,47 @@ async function handleDiaryMessageInLock(
       : `处理日记回复 chat=${msg.chatId} replyTo=${msg.replyToMessageId ?? "unknown"}`,
   );
 
+  const runPrompt = async () => {
+    if (mode === "entry") {
+      const episodeResult = await distillDiaryEntry({
+        agentService,
+        message,
+      });
+      return {
+        promptError: episodeResult.promptError ?? null,
+        successStatus: episodeResult.fallbackReason
+          ? `> ${episodeResult.fallbackReason}`
+          : undefined,
+        errorStatus: episodeResult.fallbackReason
+          ? `> ${episodeResult.fallbackReason}`
+          : episodeResult.promptError
+            ? `> 处理失败，已保存原文和兜底 episode：${episodeResult.promptError}`
+            : undefined,
+      };
+    }
+    await agent.prompt(
+      await formatDiaryPrompt(message, agentService),
+    );
+    return undefined;
+  };
+
   const sent = await (async () => {
     try {
-      return await streamAgentReply(
+      return await sendAgentReply(
+        "agent-card-stream",
         channel,
         msg,
         agent,
-        async () => {
-          if (mode === "entry") {
-            const episodeResult = await distillDiaryEntry({
-              agentService,
-              message,
-            });
-            return {
-              promptError: episodeResult.promptError ?? null,
-              successStatus: episodeResult.fallbackReason
-                ? `> ${episodeResult.fallbackReason}`
-                : undefined,
-              errorStatus: episodeResult.fallbackReason
-                ? `> ${episodeResult.fallbackReason}`
-                : episodeResult.promptError
-                  ? `> 处理失败，已保存原文和兜底 episode：${episodeResult.promptError}`
-                  : undefined,
-            };
-          }
-          await agent.prompt(
-            await formatDiaryPrompt(message, agentService),
-          );
-          return undefined;
-        },
+        runPrompt,
         diaryLog,
+        { replyInThread: false },
       );
     } finally {
       agent.setEpisodeSource(null);
     }
   })();
 
-  const assistantOccurredAt = nowISO();
-  // DM 多条消息：每条单独存 messages 表 + 登记 message_session_entries，
-  // 让用户未来回复任意一条都能定位到原 session。
-  for (let i = 0; i < sent.messageIds.length; i++) {
-    const id = larkMessageId(sent.messageIds[i])!;
-    const text = sent.texts[i] ?? sent.assistantText ?? "（卡片回复）";
-    messageService.saveAssistantMessage({
-      id,
-      source: "lark",
-      conversationId: message.conversationId,
-      conversationType: message.conversationType,
-      content: text || "（卡片回复）",
-      replyTo: message.id,
-      threadId: message.threadId,
-      rootId: message.rootId,
-      occurredAt: assistantOccurredAt,
-    });
-    agentService.recordAssistantMessage(scopeId, id, assistantOccurredAt);
-  }
+  recordAssistantReplyMessages(agentService, scopeId, message, sent);
 }
 
 export async function handleChatMessage(
@@ -343,38 +152,21 @@ async function handleChatMessageInLock(
   agentService.recordActivity(scopeId, messageTime);
   larkLog.info(`处理对话 scope=${scopeId} type=${chatType}`);
 
-  const stream = chatType === "dm" ? sendAgentReplyText : streamAgentReply;
-  const sent = await stream(
+  const runPrompt = async () => {
+    await agent.prompt(
+      await formatChatPrompt(message, agentService),
+    );
+  };
+  const sent = await sendAgentReply(
+    replyModeForChat(chatType, msg, isThreadReplyMessage(msg)),
     channel,
     msg,
     agent,
-    async () => {
-      await agent.prompt(
-        await formatChatPrompt(message, agentService),
-      );
-    },
+    runPrompt,
     larkLog,
   );
 
-  const assistantOccurredAt = nowISO();
-  // sendAgentReplyText 可能发出多条飞书消息（DM 一条条蹦）：每条都登记，
-  // 这样用户未来回复任意一条都能命中原 session。streamAgentReply 只有一条卡片，messageIds 长度恒为 1。
-  for (let i = 0; i < sent.messageIds.length; i++) {
-    const id = larkMessageId(sent.messageIds[i])!;
-    const text = sent.texts[i] ?? sent.assistantText ?? "（卡片回复）";
-    messageService.saveAssistantMessage({
-      id,
-      source: "lark",
-      conversationId: message.conversationId,
-      conversationType: message.conversationType,
-      content: text || "（卡片回复）",
-      replyTo: message.id,
-      threadId: message.threadId,
-      rootId: message.rootId,
-      occurredAt: assistantOccurredAt,
-    });
-    agentService.recordAssistantMessage(scopeId, id, assistantOccurredAt);
-  }
+  recordAssistantReplyMessages(agentService, scopeId, message, sent);
 }
 
 export async function handleLensMessage(
@@ -387,11 +179,7 @@ export async function handleLensMessage(
 ): Promise<void> {
   const target = lens.body || buildLensReplyTarget(message, agentService);
   if (!target) {
-    await channel.send(
-      msg.chatId,
-      { text: "命令后面给内容，或回复某条消息" },
-      replyOptions(msg),
-    );
+    await sendTextReply(channel, msg, "命令后面给内容，或回复某条消息");
     return;
   }
 
@@ -428,33 +216,47 @@ async function handleLensMessageInLock(
 
   try {
     agent.blockTools(blocked, "思考透镜轮只用该透镜允许的工具");
-    const sent = await streamAgentReply(
+    const runPrompt = async () => {
+      await agent.prompt(formatLensPrompt(lens.lens, target));
+    };
+    const sent = await sendAgentReply(
+      replyModeForChat(chatType, msg, isThreadReplyMessage(msg)),
       channel,
       msg,
       agent,
-      async () => {
-        await agent.prompt(formatLensPrompt(lens.lens, target));
-      },
+      runPrompt,
       larkLog,
     );
 
+    recordAssistantReplyMessages(agentService, scopeId, message, sent);
+  } finally {
+    agent.resetTools();
+  }
+}
+
+function recordAssistantReplyMessages(
+  agentService: AgentService,
+  scopeId: string,
+  message: IngestedMessage,
+  sent: AgentReplyResult,
+): void {
+  const assistantOccurredAt = nowISO();
+  const messageService = agentService.getMessageService();
+  for (let i = 0; i < sent.messageIds.length; i++) {
+    const id = larkMessageId(sent.messageIds[i])!;
+    const text = sent.texts[i] ?? sent.assistantText ?? "（卡片回复）";
     messageService.saveAssistantMessage({
-      id: larkMessageId(sent.messageId)!,
+      id,
       source: "lark",
       conversationId: message.conversationId,
       conversationType: message.conversationType,
-      content: sent.assistantText || "（卡片回复）",
+      content: text || "（卡片回复）",
       replyTo: message.id,
       threadId: message.threadId,
       rootId: message.rootId,
+      occurredAt: assistantOccurredAt,
     });
-    agentService.recordAssistantMessage(
-      scopeId,
-      larkMessageId(sent.messageId)!,
-      nowISO(),
-    );
-  } finally {
-    agent.resetTools();
+    agentService.recordAssistantMessage(scopeId, id, assistantOccurredAt);
   }
 }
 
@@ -469,7 +271,7 @@ export async function handleNotificationMessage(
   channel: LarkChannel,
   agentService: AgentService,
 ): Promise<boolean> {
-  if (msg.threadId) {
+  if (isThreadReplyMessage(msg)) {
     return false;
   }
   const messageService = agentService.getMessageService();
@@ -479,7 +281,7 @@ export async function handleNotificationMessage(
     return true;
   }
 
-  await channel.send(msg.chatId, { text: notificationReplyHint() }, replyOptions(msg));
+  await sendTextReply(channel, msg, notificationReplyHint());
   return true;
 }
 
@@ -505,14 +307,12 @@ async function handleClipMessageInLock(
   channel: LarkChannel,
   agentService: AgentService,
 ): Promise<void> {
-  if (msg.threadId) {
+  if (isThreadReplyMessage(msg)) {
     await handleChatMessageInLock(msg, message, channel, agentService, "thread");
     return;
   }
-  if (msg.replyToMessageId || msg.rootId) {
-    await channel.send(msg.chatId, {
-      text: "长按收藏反馈卡，创建话题可以继续聊这篇。",
-    }, replyOptions(msg));
+  if (!isRootMessage(msg)) {
+    await sendTextReply(channel, msg, "长按收藏反馈卡，创建话题可以继续聊这篇。");
     return;
   }
 
@@ -549,6 +349,12 @@ export async function saveClipContent(
     source_url: url ?? undefined,
     origin_note: options.originNote ?? content,
   });
+  const messageService = agentService.getMessageService();
+  messageService.saveUserMessage({
+    ...message,
+    content,
+    knowledgePath: result.path,
+  });
 
   const title = result.status === "duplicate"
     ? "📁 已收藏过"
@@ -561,12 +367,8 @@ export async function saveClipContent(
     body: article.body,
     failed: article.fetch_status === "failed",
   });
-  const sent = await channel.send(
-    msg.chatId,
-    { card: renderClipCard(title, body) },
-    replyOptions(msg),
-  );
-  agentService.getMessageService().saveAssistantMessage({
+  const sent = await sendCardReply(channel, msg, renderClipCard(title, body));
+  messageService.saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: message.conversationId,
@@ -605,15 +407,33 @@ export function buildReplyContext(
   message: IngestedMessage,
   agentService: AgentService,
 ): string {
-  const contextMessageId = message.replyTo ?? message.rootId;
-  if (!contextMessageId) return "";
-  const parent = agentService.getMessageService().get(contextMessageId);
-  if (!parent) return "";
-  const knowledge = parent.knowledge_path
-    ? `这是对知识卡片的回应，对应知识文件：${parent.knowledge_path}\n`
+  const messageService = agentService.getMessageService();
+  const contextMessageIds = [message.replyTo, message.rootId].filter(
+    (id, index, ids): id is string => !!id && ids.indexOf(id) === index,
+  );
+  let plainParent: ReturnType<typeof messageService.get> = null;
+  for (const contextMessageId of contextMessageIds) {
+    const parent = messageService.get(contextMessageId);
+    const knowledgeSource = parent?.knowledge_path
+      ? parent
+      : messageService.findKnowledgeReplyForMessage(contextMessageId);
+    if (knowledgeSource?.knowledge_path) {
+      return formatRepliedMessage(
+        parent?.content ?? knowledgeSource.content,
+        knowledgeSource.knowledge_path,
+      );
+    }
+    plainParent ??= parent;
+  }
+  return plainParent ? formatRepliedMessage(plainParent.content) : "";
+}
+
+function formatRepliedMessage(content: string, knowledgePath?: string | null): string {
+  const knowledge = knowledgePath
+    ? `这是对知识卡片的回应，对应知识文件：${knowledgePath}\n`
     : "";
   return `<replied_message>
-${knowledge}${parent.content}
+${knowledge}${content}
 </replied_message>
 
 `;
@@ -660,11 +480,4 @@ function clipCardBody(input: {
   }
   const preview = truncatePlain(input.body, 80);
   return preview ? `《${input.title}》\n\n${preview}` : `《${input.title}》`;
-}
-
-function replyOptions(msg: NormalizedMessage): SendOptions {
-  return {
-    replyTo: msg.messageId,
-    replyInThread: !!msg.threadId,
-  };
 }

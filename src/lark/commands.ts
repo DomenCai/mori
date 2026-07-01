@@ -15,7 +15,7 @@ import {
 } from "./cards.js";
 import { parseLens } from "./lenses.js";
 import { loadAppVersion } from "../config.js";
-import { saveClipContent } from "./messageHandlers.js";
+import { isThreadReplyMessage, saveClipContent } from "./messageHandlers.js";
 import { nowISO } from "../utils.js";
 
 export interface CommandContext {
@@ -152,13 +152,38 @@ export async function createClipGroup(
   registry.register(chatId, "clip", "mori 收藏");
 }
 
+
+export async function createTopicChat(
+  channel: LarkChannel,
+  opts: {
+    name: string;
+    description?: string;
+    ownerOpenId: string;
+  },
+): Promise<{ chatId: string }> {
+  // @larksuite/channel.createChat still narrows chatMode to "group"; raw OpenAPI accepts "topic".
+  const res = await channel.rawClient.im.v1.chat.create({
+    params: { user_id_type: "open_id" },
+    data: {
+      name: opts.name,
+      description: opts.description,
+      chat_mode: "topic",
+      chat_type: "private",
+      user_id_list: [opts.ownerOpenId],
+    },
+  });
+  const chatId = res.data?.chat_id;
+  if (!chatId) throw new Error("创建话题群失败：OpenAPI 未返回 chat_id");
+  return { chatId };
+}
+
 async function handleNewDiaryGroup(
   msg: NormalizedMessage,
   ctx: CommandContext,
 ): Promise<CommandResult> {
   await createDiaryGroup(ctx.channel, ctx.registry, ctx.ownerOpenId);
   await ctx.channel.send(msg.chatId, {
-    text: `✅ 日记群已创建，去新群里记日记吧！`,
+    text: `✅ 日记群已创建，去新群里记第一篇日记吧！`,
   });
   return { handled: true };
 }
@@ -215,7 +240,9 @@ function resolveClipCommandTarget(
 ): ClipCommandTarget {
   const explicit = content.trim();
   if (explicit) return { content: explicit };
-  const parentId = larkMessageId(msg.replyToMessageId);
+  const parentId = larkMessageId(
+    msg.replyToMessageId ?? (msg.rootId && msg.rootId !== msg.messageId ? msg.rootId : null),
+  );
   if (!parentId) return { content: "" };
   const parent = ctx.agentService.getMessageService().get(parentId);
   const parentContent = parent?.content.trim() ?? "";
@@ -233,8 +260,10 @@ function commandIngestedMessage(
   content: string,
 ): IngestedMessage {
   const registered = ctx.registry.getType(msg.chatId);
-  const conversationType: ConversationType = msg.threadId
-    ? "thread"
+  const conversationType: ConversationType = isThreadReplyMessage(msg)
+    ? registered === "diary"
+      ? registered
+      : "thread"
     : registered ?? (msg.chatType === "p2p" ? "dm" : "clip");
   return {
     id: larkMessageId(msg.messageId)!,
@@ -292,7 +321,7 @@ async function handleSave(
   ctx: CommandContext,
 ): Promise<CommandResult> {
   const registered = ctx.registry.getType(msg.chatId);
-  if (registered === "diary" || (registered === "clip" && !msg.threadId)) {
+  if (registered === "diary" || (registered === "clip" && !isThreadReplyMessage(msg))) {
     await ctx.channel.send(msg.chatId, {
       text: "这个群不支持 /save。",
     });

@@ -37,7 +37,8 @@ import {
   handleDiaryMessage,
   handleLensMessage,
   handleNotificationMessage,
-  isDiaryEntryMessage,
+  isRootMessage,
+  isThreadReplyMessage,
 } from "./messageHandlers.js";
 import { runRegistrationWizard } from "./setup.js";
 
@@ -193,10 +194,11 @@ async function handleLarkMessage(
     return;
   }
 
+  const threadReply = isThreadReplyMessage(effectiveMsg);
   const lens = parseLens(effectiveMsg.content);
-  if (lens && resolvedType !== "diary" && (resolvedType !== "clip" || effectiveMsg.threadId)) {
+  if (lens && resolvedType !== "diary" && (resolvedType !== "clip" || threadReply)) {
     const lensChatType: "dm" | "topic" | "thread" =
-      effectiveMsg.threadId || resolvedType === "notification"
+      threadReply || resolvedType === "notification"
         ? "thread"
         : resolvedType === "dm" || resolvedType === "topic"
           ? resolvedType
@@ -212,17 +214,20 @@ async function handleLarkMessage(
     return;
   }
 
-  if (effectiveMsg.threadId) {
-    await handleChatMessage(effectiveMsg, ingested, channel, agentService, "thread");
-  } else if (resolvedType === "diary") {
+  if (resolvedType === "diary") {
+    const diaryMode = isRootMessage(effectiveMsg) ? "entry" : "reply";
     await handleDiaryMessage(
       effectiveMsg,
       ingested,
       channel,
       agentService,
-      isDiaryEntryMessage(effectiveMsg) ? "entry" : "reply",
+      diaryMode,
     );
   } else if (resolvedType === "notification") {
+    if (threadReply) {
+      await handleChatMessage(effectiveMsg, ingested, channel, agentService, "thread");
+      return;
+    }
     const handledNotification = await handleNotificationMessage(
       effectiveMsg,
       ingested,
@@ -236,10 +241,12 @@ async function handleLarkMessage(
     }
   } else if (resolvedType === "clip") {
     await handleClipMessage(effectiveMsg, ingested, channel, agentService);
+  } else if (threadReply) {
+    await handleChatMessage(effectiveMsg, ingested, channel, agentService, "thread");
   } else if (resolvedType === "topic") {
     await handleChatMessage(effectiveMsg, ingested, channel, agentService, "topic");
-  } else {
-    await handleChatMessage(msg, ingested, channel, agentService, "dm");
+  } else if (resolvedType === "dm") {
+    await handleChatMessage(effectiveMsg, ingested, channel, agentService, "dm");
   }
 }
 
@@ -487,8 +494,11 @@ function resolveLarkConversationType(
   msg: NormalizedMessage,
   registry: ChatRegistry,
 ): ConversationType {
-  if (msg.threadId) return "thread";
   const registered = registry.getType(msg.chatId);
+  if (isThreadReplyMessage(msg)) {
+    if (registered === "diary") return "diary";
+    return "thread";
+  }
   if (registered) return registered;
   if (msg.chatType === "p2p") return "dm";
   return "topic";
