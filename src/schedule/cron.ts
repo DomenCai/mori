@@ -30,6 +30,7 @@ import { VaultService, type VaultFile } from "../knowledge/vault.js";
 import { isoWeekKey, isoWeekRange } from "../utils.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 import { createTopicChat } from "../lark/commands.js";
+import { renderInfoCard, renderKnowledgeCard } from "../lark/cards.js";
 
 const log = logger("cron");
 
@@ -314,14 +315,15 @@ async function deliverScheduleResult(
     registry,
     schedule.deliver?.notifyChat?.trim() || undefined,
   );
-  const markdown = notificationMarkdown(output.title, output.body);
-  const sent = await channel.send(chatId, { markdown });
+  const sent = await channel.send(chatId, {
+    card: renderInfoCard(output.title, output.body),
+  });
   new MessageService(db).saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: larkChatConversationId(chatId),
     conversationType: "notification",
-    content: markdown,
+    content: output.body,
   });
 }
 
@@ -509,22 +511,17 @@ async function runWeeklyReview(
   if (!latest) return;
   const chatId = await ensureNotificationChat(channel, registry);
   const cardBody = `${latest.body}\n\n---\n${latest.titles.map((title) => `- ${title}`).join("\n")}`;
-  const markdown = notificationMarkdown(`${latest.period} 收藏周报`, cardBody);
-  const sent = await channel.send(chatId, { markdown });
+  const sent = await channel.send(chatId, {
+    card: renderKnowledgeCard(`${latest.period} 收藏周报`, cardBody),
+  });
   new MessageService(db).saveAssistantMessage({
     id: larkMessageId(sent.messageId)!,
     source: "lark",
     conversationId: larkChatConversationId(chatId),
     conversationType: "notification",
-    content: markdown,
+    content: cardBody,
     knowledgePath: latest.path,
   });
-}
-
-function notificationMarkdown(title: string, body: string): string {
-  const cleanTitle = title.trim();
-  const cleanBody = body.trim();
-  return cleanTitle ? `**${cleanTitle}**\n\n${cleanBody}` : cleanBody;
 }
 
 function missingReviewPeriods(files: VaultFile[], now: Date): string[] {

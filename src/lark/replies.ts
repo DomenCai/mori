@@ -33,6 +33,7 @@ export type AgentReplyMode = "agent-card-stream" | "markdown-stream" | "markdown
 export type InteractiveChatType = "dm" | "topic" | "thread";
 
 export interface ReplyBehavior {
+  showReplyTo?: boolean;
   replyInThread?: boolean;
 }
 
@@ -56,7 +57,7 @@ function defaultReplyInThread(msg: NormalizedMessage): boolean {
 
 function replyOptions(msg: NormalizedMessage, behavior: ReplyBehavior = {}): SendOptions {
   return {
-    replyTo: msg.messageId,
+    replyTo: behavior.showReplyTo === false ? undefined : msg.messageId,
     replyInThread: behavior.replyInThread ?? defaultReplyInThread(msg),
   };
 }

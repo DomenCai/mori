@@ -164,6 +164,7 @@ async function handleChatMessageInLock(
     agent,
     runPrompt,
     larkLog,
+    { showReplyTo: chatType === "dm" ? false : undefined },
   );
 
   recordAssistantReplyMessages(agentService, scopeId, message, sent);
