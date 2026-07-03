@@ -4,7 +4,7 @@
 // 用法：
 //   script:
 //     node merge-schedule.mjs --id <id> --name <显示名> --script <x.mjs> \
-//       --cron "<cron>" [--inbox <Inbox名>] [--notify true|false] [--enabled true|false] [--file <path>]
+//       --cron "<cron>" [--context diary,knowledge] [--inbox <Inbox名>] [--notify true|false] [--enabled true|false] [--file <path>]
 //   agent inline:
 //     node merge-schedule.mjs --kind agent --id <id> --name <显示名> --prompt "..." \
 //       --cron "<cron>" [--profile normal|strong] [--system bare|mori|自定义] [--tools search_memory,read_vault]
@@ -53,6 +53,15 @@ if (args.prompt) entry.prompt = args.prompt;
 if (kind === "agent" && args.profile) entry.profile = args.profile;
 if (args.system) entry.system = args.system;
 if (args.tools) entry.tools = args.tools.split(",").map((item) => item.trim()).filter(Boolean);
+if (args.context) {
+  const context = args.context.split(",").map((item) => item.trim()).filter(Boolean);
+  const invalid = context.filter((item) => !["diary", "knowledge"].includes(item));
+  if (invalid.length) {
+    console.error("--context 只支持 diary,knowledge；无效值：" + invalid.join(", "));
+    process.exit(1);
+  }
+  entry.context = [...new Set(context)];
+}
 entry.deliver = { notify: args.notify !== "false" };
 if (args.inbox) entry.deliver.inbox = args.inbox;
 

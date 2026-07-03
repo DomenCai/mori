@@ -99,6 +99,85 @@ export default async function run() {
 }
 ```
 
+### Script Context
+
+`script` 和 `agent` task script 可以在 `schedules.json` 里用 `context` 显式声明需要的只读框架能力：
+
+```jsonc
+{
+  "id": "export-diary",
+  "name": "导出日记",
+  "kind": "script",
+  "script": "export-diary.mjs",
+  "cron": "0 3 * * *",
+  "context": ["diary", "knowledge"],
+  "enabled": true
+}
+```
+
+未声明的能力不会注入；不写 `context` 时旧脚本继续按普通脚本运行。第一版只支持：
+
+| context | 能力 | 写入 |
+|---|---|---|
+| `diary` | 读取日记、AI 回复、episode | 否 |
+| `knowledge` | 读取 vault 笔记和周报正文 | 否 |
+
+脚本入口会收到 `ctx`：
+
+```js
+export default async function run(ctx) {
+  const diaries = await ctx.diary.export();
+  const notes = await ctx.knowledge.export({
+    start: "2026-07-01",
+    end: "2026-07-03",
+  });
+  return { body: `日记 ${diaries.length} 条，知识 ${notes.length} 条` };
+}
+```
+
+`start` / `end` 都可选，默认最近 7 天。传 `YYYY-MM-DD` 时按 `setting.time.timezone` 的业务自然日解释，范围为 `[start, end)`；日期型 `end` 会包含该日期整天。
+
+`ctx.diary.export({ start?, end? })` 返回：
+
+```ts
+Array<{
+  id: string;
+  source: string;
+  conversationId: string;
+  occurredAt: string;
+  localDate: string;
+  content: string;
+  aiReplies: Array<{ id: string; occurredAt: string; content: string }>;
+  episodes: Array<{ id: string; occurredAt: string; brief: string | null; analysis: unknown }>;
+}>
+```
+
+`ctx.knowledge.export({ start?, end? })` 按 frontmatter `saved_at` 过滤，返回：
+
+```ts
+Array<{
+  path: string;
+  title: string;
+  sourceType: string;
+  sourceUrl?: string;
+  savedAt: string;
+  frontmatter: Record<string, unknown>;
+  body: string;
+}>
+```
+
+`agent` task script 同样可以声明 `context`，入口参数是 `{ Type, ...ctx }`：
+
+```js
+export default async function ({ Type, diary }) {
+  const entries = await diary.export();
+  return {
+    system: "bare",
+    prompt: `总结这些日记：\n${JSON.stringify(entries)}`,
+  };
+}
+```
+
 ## Agent Inline 任务
 
 inline agent 用于简单提醒或简单定时问答：

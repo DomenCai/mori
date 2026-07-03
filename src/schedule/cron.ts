@@ -31,6 +31,7 @@ import { isoWeekKey, isoWeekRange } from "../utils.js";
 import { larkChatConversationId, larkMessageId } from "../lark/ingest.js";
 import { createTopicChat } from "../lark/commands.js";
 import { renderInfoCard, renderKnowledgeCard } from "../lark/cards.js";
+import { buildScheduleScriptContext } from "./context.js";
 
 const log = logger("cron");
 
@@ -111,6 +112,7 @@ export function initSchedules(
               registry,
               db,
               setting.script.defaults,
+              timezone,
             );
           } catch (err) {
             log.error(`script ${schedule.id} 失败:`, err);
@@ -137,6 +139,7 @@ export function initSchedules(
               db,
               agentService,
               setting.script.defaults,
+              timezone,
             );
           } catch (err) {
             log.error(`agent ${schedule.id} 失败:`, err);
@@ -176,6 +179,7 @@ export async function runScheduleNow(
       registry,
       db,
       setting.script.defaults,
+      setting.time.timezone,
     );
     return;
   }
@@ -187,6 +191,7 @@ export async function runScheduleNow(
     db,
     agentService,
     setting.script.defaults,
+    setting.time.timezone,
   );
 }
 
@@ -213,11 +218,14 @@ async function runScriptSchedule(
   registry: ChatRegistry,
   db: Database.Database,
   scriptDefaults: ScriptRuntimeConfig,
+  timezone: string,
 ): Promise<void> {
   const scriptPath = resolveScriptPath(schedule.script);
   const result = await runUserScript(
+    schedule,
     scriptPath,
     mergeScriptRuntime(scriptDefaults, schedule.runtime),
+    timezone,
   );
   await deliverScheduleResult(schedule, result, channel, registry, db);
 }
@@ -229,10 +237,11 @@ async function runAgentSchedule(
   db: Database.Database,
   agentService: AgentService,
   scriptDefaults: ScriptRuntimeConfig,
+  timezone: string,
 ): Promise<void> {
   const runtime = mergeScriptRuntime(scriptDefaults, schedule.runtime);
   const result = await withTimeout(
-    runAgentScheduleInner(schedule, agentService),
+    runAgentScheduleInner(schedule, agentService, timezone),
     runtime.timeoutMs,
     `agent 超时：${schedule.id}`,
   );
@@ -242,6 +251,7 @@ async function runAgentSchedule(
 async function runAgentScheduleInner(
   schedule: AgentSchedule,
   agentService: AgentService,
+  timezone: string,
 ): Promise<ScheduleResult> {
   if (schedule.prompt && schedule.script) {
     throw new Error(`agent ${schedule.id} 不能同时配置 prompt 和 script`);
@@ -255,7 +265,7 @@ async function runAgentScheduleInner(
     return { title: schedule.name, body: text };
   }
   if (schedule.script) {
-    const task = await loadAgentTask(schedule.script);
+    const task = await loadAgentTask(schedule, timezone);
     if (task === null) return null;
     const text = await agentService.runTask(task.prompt, {
       profile: schedule.profile,
@@ -267,13 +277,23 @@ async function runAgentScheduleInner(
   throw new Error(`agent ${schedule.id} 必须配置 prompt 或 script`);
 }
 
-async function loadAgentTask(script: string): Promise<AgentTaskSpec | null> {
-  const scriptPath = resolveScriptPath(script);
+async function loadAgentTask(
+  schedule: AgentSchedule,
+  timezone: string,
+): Promise<AgentTaskSpec | null> {
+  const scriptPath = resolveScriptPath(schedule.script!);
   const mod = await import(`${pathToFileURL(scriptPath).href}?t=${Date.now()}`);
   if (typeof mod.default !== "function") {
     throw new Error("agent script 必须 default export 一个 async function");
   }
-  const value = await mod.default({ Type });
+  const value = await mod.default({
+    Type,
+    ...buildScheduleScriptContext({
+      scheduleId: schedule.id,
+      context: schedule.context,
+      timezone,
+    }),
+  });
   if (value === null || value === undefined) return null;
   if (typeof value !== "object") {
     throw new Error("agent script 必须返回 task spec 或 null");
@@ -355,12 +375,19 @@ function getCurrentSchedule(scheduleId: string): ScheduleDefinition | undefined 
 }
 
 function runUserScript(
+  schedule: ScriptSchedule,
   scriptPath: string,
   runtime: ScriptRuntimeConfig,
+  timezone: string,
 ): Promise<ScheduleResult> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./script-worker.js", import.meta.url), {
-      workerData: { scriptPath },
+      workerData: {
+        scriptPath,
+        scheduleId: schedule.id,
+        context: schedule.context,
+        timezone,
+      },
       resourceLimits: runtime.resourceLimits,
     });
     const timer = setTimeout(() => {

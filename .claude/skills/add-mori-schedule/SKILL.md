@@ -49,6 +49,7 @@ null
   "kind": "script",
   "script": "ai-daily.mjs",
   "cron": "0 9 * * *",
+  "context": ["diary"],
   "deliver": { "notify": true },
   "enabled": true
 }
@@ -57,7 +58,7 @@ null
 脚本：
 
 ```js
-export default async function () {
+export default async function (ctx) {
   const data = await fetch("https://example.com/api").then((r) => r.json());
   if (data.items.length === 0) return null;
   return {
@@ -66,6 +67,43 @@ export default async function () {
   };
 }
 ```
+
+## Schedule Context（只读）
+
+当脚本需要读取 mori 基建数据时，必须在 `schedules.json` 条目里显式声明 `context`。第一版只支持只读能力：
+
+```json
+"context": ["diary", "knowledge"]
+```
+
+- 不写 `context`：旧脚本行为不变。
+- `diary`：注入 `ctx.diary.export({ start?, end? })`，读取日记、AI 回复和 episode。
+- `knowledge`：注入 `ctx.knowledge.export({ start?, end? })`，读取 vault 笔记和周报正文。
+- `start` / `end` 都可选，默认最近 7 天；`YYYY-MM-DD` 按 `setting.time.timezone` 的业务自然日解释。
+- context 只读，不提供 raw DB、channel、agentService，也不提供写 state。
+
+普通 script：
+
+```js
+export default async function (ctx) {
+  const diaries = await ctx.diary.export({ start: "2026-07-01", end: "2026-07-03" });
+  return { body: `导出 ${diaries.length} 篇日记` };
+}
+```
+
+agent task script 入口参数是 `{ Type, ...ctx }`：
+
+```js
+export default async function ({ Type, knowledge }) {
+  const notes = await knowledge.export();
+  return {
+    system: "bare",
+    prompt: `整理这些资料：\n${JSON.stringify(notes)}`,
+  };
+}
+```
+
+用 helper 合并配置时传 `--context diary,knowledge`。
 
 ## 形态二：agent inline prompt
 
@@ -167,7 +205,7 @@ export default async function ({ Type }) {
 
 ```bash
 node $SKILL/scripts/merge-schedule.mjs --id <id> --name "<显示名>" \
-  --script <name>.mjs --cron "<cron>" --file ./data/schedules.json
+  --script <name>.mjs --cron "<cron>" --context diary,knowledge --file ./data/schedules.json
 
 node $SKILL/scripts/merge-schedule.mjs --kind agent --id <id> --name "<显示名>" \
   --prompt "<prompt>" --profile normal --system mori --tools search_memory --cron "<cron>" --file ./data/schedules.json

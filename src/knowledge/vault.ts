@@ -141,6 +141,14 @@ export class VaultService {
 
   listFrontmatter(): VaultFile[] {
     this.ensureBaseDirs();
+    return this.listExistingFrontmatter();
+  }
+
+  listFrontmatterReadonly(): VaultFile[] {
+    return this.listExistingFrontmatter();
+  }
+
+  private listExistingFrontmatter(): VaultFile[] {
     const files: VaultFile[] = [];
     for (const file of [
       ...walkMarkdown(join(this.root, "notes")),

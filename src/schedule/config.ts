@@ -9,12 +9,15 @@ export interface SchedulesConfig {
 }
 
 export type ScheduleDefinition = BuiltinSchedule | ScriptSchedule | AgentSchedule;
+export type ScheduleContextName = "diary" | "knowledge";
 
 export interface BaseSchedule {
   id: string;
   name: string;
   enabled: boolean;
   cron?: string;
+  /** Optional read-only framework context injected into script entrypoints. */
+  context?: ScheduleContextName[];
 }
 
 export interface BuiltinSchedule extends BaseSchedule {
