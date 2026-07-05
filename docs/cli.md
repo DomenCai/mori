@@ -4,37 +4,37 @@
 
 ## 安装
 
-需要 Node ≥ 22.19、pnpm。`better-sqlite3` 默认下载预编译二进制，通常无需编译器；只有拿不到匹配 prebuild 需本地编译时（全新 Node 大版本 / 冷门平台 / GitHub 下载受阻）才需要 macOS 的 Xcode Command Line Tools。安装过程中 `prepare` 脚本会自动跑 `tsc` 编译，无需提前 build。
+需要 Node ≥ 22.19，普通用户不需要安装 pnpm。`better-sqlite3` 默认下载预编译二进制，通常无需编译器；只有拿不到匹配 prebuild 需本地编译时（全新 Node 大版本 / 冷门平台 / GitHub 下载受阻）才需要 macOS 的 Xcode Command Line Tools。
 
-**从 GitHub 安装**（仓库含飞书 secret / LLM key，通常是 private，走你本机的 git 凭据）：
-
-```bash
-pnpm add -g github:DomenCai/mori          # 替换为你的仓库
-pnpm add -g github:DomenCai/mori#v1.0.0    # 指定 tag/commit
-```
-
-**从本地安装**：
+**一键安装**：
 
 ```bash
-cd /path/to/mori
-pnpm add -g $(pwd)        # 安装当前目录
-# 或开发期软链，改完即生效：
-pnpm link --global
+npx @domencai/mori@latest install
 ```
 
-装好后获得 `mori` 命令。
+该命令会先把当前版本持久安装到 npm 全局目录，再从全局 CLI 启动 `mori setup`。不能直接从 npx 的临时缓存启动 daemon，否则清理缓存后后台进程路径会失效。
+
+也可以手动执行：
+
+```bash
+npm install --global @domencai/mori@latest
+mori setup
+```
+
+源码开发时仍可在仓库中执行 `pnpm link --global`，然后运行 `mori setup`。
 
 ## 首次配置
 
-后台守护无法扫码，**首次必须前台跑一次**完成飞书注册：
+`mori setup` 会完成整套配置：
 
-```bash
-mori run
-```
+1. 选择 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses。
+2. 输入 Base URL 和隐藏显示的 API key。
+3. 尝试从 endpoint 获取模型列表，分别选择 normal / strong 模型；获取失败或没有目标模型时可手动输入模型 ID。
+4. 根据 `data/model-prices.csv` 写入匹配的模型价格；未匹配时成本按 0。
+5. 渲染飞书二维码，扫码创建/授权应用并写入 `~/.mori/lark_config.json`。
+6. 询问是否立即后台启动。
 
-终端渲染二维码，用飞书 App 扫码创建/授权应用，凭据写入 `~/.mori/lark_config.json`。完成后 `Ctrl+C` 退出。
-
-再配置 LLM key：编辑 `~/.mori/.env`，填 `~/.mori/setting.json` 里 `apiKeyEnv` 对应的 key。`setting.json` 首次缺失时会从仓库默认模板自动生成。
+已有配置默认保留，只有明确选择重新配置或重新绑定时才覆盖对应部分。
 
 ## 守护运行
 
@@ -42,7 +42,7 @@ mori run
 mori start     # 后台 detached 启动，写 pid，日志重定向到文件
 mori status    # 是否在运行 + pid + 运行中版本 + 日志路径
 mori stop      # 停止
-mori run       # 前台运行（调试 / 首次扫码用）
+mori run       # 前台运行（调试用）
 mori -v        # 当前产物版本
 ```
 
@@ -73,6 +73,7 @@ mori storyline reopen <id>
 | `lark_config.json` | 飞书凭据、owner、chat 绑定 |
 | `setting.json` | LLM、时区、会话、HTTP、script 和知识搜索配置 |
 | `.env` | LLM API key |
+| npm 包内 `data/model-prices.csv` | setup 生成模型配置时使用的价格表 |
 | `agent/` | 用户 prompt override、说明，以及只读参考用的 `builtin/` |
 | `memory/` | 可编辑的身份画像 `profile.md` 和当前主线 `chapter.md` |
 | `app.db` | SQLite 数据库 |
@@ -99,10 +100,10 @@ node .claude/skills/deploy-mori/scripts/update.mjs
 
 也可以直接让协作 agent「升级 mori」，由 deploy-mori skill 驱动同一脚本。`update.mjs` 会先执行 `git pull --rebase --autostash`，允许本地有少量 tracked 改动；如果拉取或 autostash 产生冲突，脚本中止，需手动处理后重试。拉取成功后，只要远端带来新提交、当前产物的 `dist/build-info.json` 不是当前 `HEAD`、`mori --version` 与源码 `package.json` 版本不一致、当前工作树有 tracked 改动，或 `node_modules` 缺失，就会执行 `pnpm install --frozen-lockfile`、`pnpm build`、迁移/补齐允许自动处理的 `setting.json` 字段，并在更新前 daemon 正在运行时重启。旧版本如果没有 `mori --version`，脚本按 `1.0.0` 处理。`pull`/`install`/`build` 任一步失败都不会停掉正在跑的 daemon，只有全部成功后才有一两秒重启窗口。
 
-**全局包安装**（`pnpm add -g github:...`）则重新安装：
+**npm 全局安装**：
 
 ```bash
-pnpm add -g github:DomenCai/mori   # 重新安装最新版
+npm install --global @domencai/mori@latest
 mori stop && mori start
 ```
 
@@ -112,6 +113,6 @@ mori stop && mori start
 
 ```bash
 mori stop
-pnpm remove -g mori
+npm uninstall --global @domencai/mori
 # 如需清除全部数据：rm -rf ~/.mori
 ```

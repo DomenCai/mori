@@ -33,14 +33,14 @@ pnpm dev
 两处配合：
 
 - `data/setting.json` —— 声明 provider、模型、chatType 档位和运行默认值。`apiKeyEnv` 指向环境变量名。
-- `.env` —— 填上面 `apiKeyEnv` 对应的 key（如 `ANTHROPIC_API_KEY=sk-ant-...`）。
+- `.env` —— 填上面 `apiKeyEnv` 对应的 key；`mori setup` 生成的生产配置统一使用 `MORI_API_KEY`。
 
 `chat_types` 直接把 `dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`review` 映射到一个 `model_profile`。换模型只改 `setting.json`，不动代码。
 
 ## 日常开发
 
 - `pnpm dev` —— 前台运行 + 文件改动热重载，日志打到终端并按天落到 `data/logs/YYYY-MM-DD.log`。
-- `pnpm build` —— `tsc` 类型检查并编译到 `dist/`，随后复制 `src/storage/schema.sql` 和 `src/storage/migrations/*.sql` 到 `dist/storage/`，再写入 `dist/build-info.json`（CLI 安装时由 `prepare` 自动触发，平时不用手跑）。
+- `pnpm build` —— `tsc` 类型检查并编译到 `dist/`，随后复制 `src/storage/schema.sql` 和 `src/storage/migrations/*.sql` 到 `dist/storage/`，再写入 `dist/build-info.json`。发布 tarball 前由 `prepack` 自动触发；源码部署脚本会显式执行。
 - 改内置 prompt —— 直接编辑 `agent/` 下的 `soul.md` / `response_style.md` / `memory_policy.md`，下一次构造 system prompt 生效。
 - 改画像或当前主线 —— 编辑 `data/memory/profile.md` / `data/memory/chapter.md`，下一次用户 turn 或查看命令会同步进 SQLite。
 
@@ -95,3 +95,15 @@ MORI_DEV=1 pnpm tsx scripts/backfill-diary.ts diary-data --dry-run   # 只解析
 ## 测试
 
 遵循根 `CLAUDE.md` 的测试纪律：只测主流程、高风险路径、真实 bug 回归、用户可见行为，不为私有 helper 和不可达状态补测试。端到端测试针对完整链路（记日记 → 流式回复 → 写 episode → 周总结）。
+
+## 发布 npm
+
+包发布为公开的 `@domencai/mori`，可执行命令仍是 `mori`。发布前先确认版本号，再检查真实 tarball：
+
+```bash
+pnpm build
+npm pack --dry-run
+npm publish
+```
+
+`prepack` 会重新构建，`package.json#files` 是发布内容白名单。发布后用 `npx @domencai/mori@latest install` 验证全局安装和首次配置；不要从 npx 临时缓存直接启动 daemon。

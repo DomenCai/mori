@@ -1,8 +1,24 @@
 {
-  "name": "mori",
-  "version": "1.1.7",
+  "name": "@domencai/mori",
+  "version": "1.2.0",
   "type": "module",
   "description": "飞书优先的对话型个人思想伙伴，基于 pi-agent-core",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DomenCai/mori.git"
+  },
+  "homepage": "https://github.com/DomenCai/mori#readme",
+  "bugs": {
+    "url": "https://github.com/DomenCai/mori/issues"
+  },
+  "files": [
+    "dist",
+    "agent",
+    "data/setting.example.json",
+    "data/model-prices.csv",
+    ".env.example"
+  ],
   "bin": {
     "mori": "dist/main.js"
   },
@@ -10,7 +26,10 @@
     "dev": "MORI_DEV=1 tsx watch src/main.ts",
     "start": "node dist/main.js",
     "build": "tsc && node scripts/copy-storage-sql.mjs && node scripts/write-build-info.mjs",
-    "prepare": "pnpm run build"
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -19,6 +38,7 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.79.6",
     "@earendil-works/pi-ai": "^0.79.6",
+    "@inquirer/prompts": "^8.5.2",
     "@larksuite/channel": "^0.2.0",
     "better-sqlite3": "^12.11.1",
     "croner": "^10.0.1",

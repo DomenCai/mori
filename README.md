@@ -25,7 +25,19 @@
 
 ## 快速开始
 
-需要 Node ≥ 22.19、pnpm 10。
+需要 Node ≥ 22.19。普通用户不需要预装 pnpm。
+
+**一键安装**：
+
+```bash
+npx @domencai/mori@latest install
+```
+
+安装器会依次引导选择 API 协议、填写 Base URL 和 API key、选择 normal / strong 模型、扫码绑定飞书，并询问是否立即后台启动。以后需要重新配置时运行：
+
+```bash
+mori setup
+```
 
 **本地开发**（数据落在项目内 `./data`，热重载）：
 
@@ -35,13 +47,11 @@ pnpm install
 pnpm dev            # 首次会弹出二维码，用飞书 App 扫码创建/授权应用
 ```
 
-**作为 CLI 安装**（常驻后台，数据落在 `~/.mori`）：
+也可以直接全局安装：
 
 ```bash
-pnpm add -g github:DomenCai/mori   # 替换为你的仓库
-mori run      # 首次：前台扫码完成飞书注册
-mori start    # 之后：后台守护运行
-mori status   # 查看状态与日志路径
+npm install --global @domencai/mori@latest
+mori setup
 ```
 
 详见 [开发指南](docs/development.md) 与 [CLI 使用指南](docs/cli.md)。

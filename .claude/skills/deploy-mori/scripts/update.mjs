@@ -104,7 +104,7 @@ if (toplevel.status !== 0) fail("脚本不在 git 工作副本内，无法定位
 const repoRoot = realpathSync(toplevel.stdout.trim());
 if (
   !existsSync(join(repoRoot, "package.json")) ||
-  readJson(join(repoRoot, "package.json")).name !== "mori"
+  readJson(join(repoRoot, "package.json")).name !== "@domencai/mori"
 ) {
   fail(`定位到的仓库 ${repoRoot} 不是 mori。`);
 }

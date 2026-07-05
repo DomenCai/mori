@@ -17,17 +17,17 @@
 
 | 文件 | 谁写入 | 内容 | 规则 |
 |---|---|---|---|
-| `setting.json` | 人手编辑；首次缺失由 `data/setting.example.json` seed | LLM provider、模型路由、时区、会话策略、HTTP 抓取、script 默认限制、知识搜索配置 | 运行时只读 |
+| `setting.json` | `mori setup` 生成；也可人手编辑 | LLM provider、模型路由、时区、会话策略、HTTP 抓取、script 默认限制、知识搜索配置 | 运行时只读 |
 | `lark_config.json` | 首次扫码向导 + 运行时自动更新 | 飞书凭据、owner、chat 绑定 | 只放飞书相关状态 |
 | `schedules.json` | 人手编辑 + `/schedules` 卡片动作 | 定时任务启停、cron 覆盖、script / agent 任务定义 | 不存运行历史 |
-| `.env` | 模板 seed 后人手编辑 | LLM API key | 只放 secret value |
+| `.env` | `mori setup` 生成；也可人手编辑 | LLM API key | 只放 secret value |
 | `agent/soul.md`、`agent/response_style.md` | 模板 seed 后人手编辑 | 用户 prompt override | 下一次构造 system prompt 生效；空文件回退内置 |
 | `agent/builtin/*.md` | 启动时自动刷新 | 当前版本内置 prompt，只供查看 | 运行时不读取 |
 | `memory/profile.md`、`memory/chapter.md` | 程序写入 + 人手编辑 | 身份画像与当前主线 | 下一次用户 turn 或查看命令会同步 |
 
 ## 飞书凭据 `lark_config.json`
 
-首次前台运行 `mori run`（或 `pnpm dev`）会渲染二维码，飞书扫码后自动创建 / 授权应用，凭据写入 `lark_config.json`。
+生产安装运行 `mori setup` 会渲染二维码；开发态首次运行 `pnpm dev` 也会在缺少配置时进入同一飞书注册向导。扫码后自动创建 / 授权应用，凭据写入 `lark_config.json`。
 
 字段（见 `LarkConfig`）：
 
@@ -50,10 +50,10 @@
 
 ## LLM 与模型路由 `setting.json`
 
-`.env` 只填 key 值；`setting.json` 通过 `apiKeyEnv` 引用环境变量名：
+`mori setup` 固定把 LLM key 写成 `MORI_API_KEY`；`setting.json` 通过 `apiKeyEnv` 引用：
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
+MORI_API_KEY=...
 ```
 
 `setting.llm` 分三段：
@@ -65,7 +65,7 @@ ANTHROPIC_API_KEY=sk-ant-...
       "main": {
         "api": "anthropic-messages",
         "baseUrl": "https://api.anthropic.com",
-        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "apiKeyEnv": "MORI_API_KEY",
         "headers": {},
         "request": {
           "cacheRetention": "long"
@@ -102,6 +102,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 - `providers` 描述 endpoint 怎么连，以及 endpoint 下有哪些模型。`api` 直接使用 pi-ai API surface，例如 `anthropic-messages`、`openai-responses`、`openai-completions`。
 - `providers.<name>.request.cacheRetention` 会作为 harness stream option 生效。
 - `models` 是模型事实表：`name`、`input`、`reasoning`、`contextWindow`、`maxTokens`，`cost` 可选，缺省按 0 合成。
+- setup 的模型候选只来自用户 endpoint；获取失败或列表中没有目标模型时由用户手填。`pi-ai` 内置模型只补充已选模型的 context window / max tokens，不提供候选或改写模型 ID。
+- `cost` 由 npm 包内 `data/model-prices.csv` 按 `model_pattern` 匹配，多个规则命中时取最具体的一条；未匹配时不猜价格，运行时按 0。
 - `model_profiles` 是语义档位（`normal` / `strong`），只配 `provider` 和 `model`，是"强模型到底是哪个"的唯一真源；换强模型只改这一处。
 - `chat_types` 直接按 chatType 映射到档位名：`dm`、`topic`、`thread`、`diary`、`distill`、`daily_memory`、`consolidation`、`review`。**未列出的 chatType 自动走 `normal`**。
 

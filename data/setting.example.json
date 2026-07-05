@@ -4,7 +4,7 @@
       "main": {
         "api": "anthropic-messages",
         "baseUrl": "https://api.anthropic.com",
-        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "apiKeyEnv": "MORI_API_KEY",
         "headers": {},
         "request": {
           "cacheRetention": "long"

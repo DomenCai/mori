@@ -87,7 +87,7 @@ let linkedRepo = "";
       const real = realpathSync(bin.out);
       // 形如 <repo>/dist/main.js → 源码 link 部署
       const maybeRepo = resolve(dirname(real), "..");
-      if (existsSync(join(maybeRepo, "package.json")) && readJson(join(maybeRepo, "package.json")).name === "mori") {
+      if (existsSync(join(maybeRepo, "package.json")) && readJson(join(maybeRepo, "package.json")).name === "@domencai/mori") {
         linkedRepo = maybeRepo;
         line("info", `源码部署，仓库：${linkedRepo}`);
       } else {
@@ -117,14 +117,14 @@ let larkCfg = null;
 let setting = null;
 {
   if (!existsSync(HOME)) {
-    line("bad", "~/.mori 不存在（从未配置）→ 首次需 mori run 扫码");
+    line("bad", "~/.mori 不存在（从未配置）→ 首次需 mori setup");
   } else {
     const larkPath = join(HOME, "lark_config.json");
     if (existsSync(larkPath)) {
       larkCfg = readJson(larkPath);
       line("ok", `飞书已注册（tenant=${larkCfg.tenant ?? "feishu"}${larkCfg.ownerOpenId ? ", owner 已绑定" : ", owner 未绑定"}）`);
     } else {
-      line("bad", "lark_config.json 缺失 → mori run 扫码注册");
+      line("bad", "lark_config.json 缺失 → mori setup 扫码注册");
     }
     const settingPath = join(HOME, "setting.json");
     if (existsSync(settingPath)) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 全新安装 mori：在仓库根目录装依赖（prepare 钩子自动 build）并全局 link，得到 mori 命令。
+// 全新安装 mori：在仓库根目录装依赖、构建并全局 link，得到 mori 命令。
 // 不做 clone（需用户给地址/目录）、不做飞书扫码（需用户手动）—— 这两步由 skill 引导用户完成。
 // 用法：
 //   node install.mjs                 自动定位本仓库，优先 pnpm
@@ -36,7 +36,7 @@ function has(cmd) {
 
 // 校验仓库
 const pkgPath = join(repo, "package.json");
-if (!existsSync(pkgPath) || JSON.parse(readFileSync(pkgPath, "utf-8")).name !== "mori") {
+if (!existsSync(pkgPath) || JSON.parse(readFileSync(pkgPath, "utf-8")).name !== "@domencai/mori") {
   fail(`${repo} 不是 mori 仓库。传入正确目录：node install.mjs <repo-dir>`);
 }
 
@@ -54,17 +54,16 @@ if (!has(pm)) {
 console.log(`[install] 仓库：${repo}`);
 console.log(`[install] 包管理器：${pm}`);
 
-// 装依赖（prepare 钩子会自动 tsc + 写 build-info）
+// 装依赖并显式构建
 run(pm, ["install"], {
   hint: "若错误是 better-sqlite3 / node-gyp 编译失败，多半缺 Xcode CLT（xcode-select --install）后重试；多数平台会直接下载预编译二进制、无需编译。",
 });
+run(pm, ["run", "build"]);
 // 全局 link
 run(pm, pm === "pnpm" ? ["link", "--global"] : ["link"]);
 
 console.log(`
 [install] ✓ 安装完成，已得到 mori 命令。接下来（需用户手动）：
-  1. mori run        前台跑，终端出二维码 → 飞书 App 扫码注册 → 看到就绪后 Ctrl+C 退出
-  2. 编辑 ~/.mori/.env，填 setting.json 里各 apiKeyEnv（至少 ANTHROPIC_API_KEY）
-  3. mori start      后台启动
-  4. node ${join(scriptDir, "doctor.mjs")} --connectivity   体检（飞书+LLM 连通）
+  1. mori setup      配置 LLM、选择模型、扫码绑定飞书，并按提示启动
+  2. node ${join(scriptDir, "doctor.mjs")} --connectivity   体检（飞书+LLM 连通）
 `);
